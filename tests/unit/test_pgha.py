@@ -201,7 +201,8 @@ class SqlTest(unittest.TestCase):
         lines = ["CREATE ROLE postgres;\n", "ALTER ROLE postgres WITH SUPERUSER PASSWORD 'x';\n",
                  "CREATE ROLE replicator;\n", "ALTER ROLE rewind_user WITH LOGIN;\n",
                  "CREATE ROLE warpgate1;\n", "ALTER ROLE warpgate1 WITH LOGIN PASSWORD 'SCRAM';\n",
-                 "CREATE ROLE postgresx;\n"]
+                 "CREATE ROLE postgresx;\n", 'CREATE ROLE "replicator";\n',
+                 'ALTER ROLE "postgres" WITH SUPERUSER;\n']
         out = list(pgha.filter_dump(lines))
         self.assertEqual(out, ["CREATE ROLE warpgate1;\n", "ALTER ROLE warpgate1 WITH LOGIN PASSWORD 'SCRAM';\n",
                                "CREATE ROLE postgresx;\n"])

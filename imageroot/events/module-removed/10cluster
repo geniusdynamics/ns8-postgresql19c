@@ -21,9 +21,8 @@ removed = event.get("module", "")
 if not removed or removed == pgha.env("MODULE_ID") or not pgha.role():
     sys.exit(0)
 
-import subprocess
 if pgha.is_cluster():
-    subprocess.run(["pgha-reconcile", "--removed", removed], stdout=subprocess.DEVNULL)
+    pgha.run_reconcile(removed=removed)
 
 # Consumer: disable the owner role of its default database, on the primary
 if pgha.runs_postgres() and pgha.is_local_primary():

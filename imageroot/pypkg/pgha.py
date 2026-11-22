@@ -777,7 +777,7 @@ SELECT json_agg(row_to_json(t) ORDER BY t.name) FROM (
 def filter_dump(text_lines):
     """Drop the statements of the system roles from a pg_dumpall output:
     Patroni creates them with the passwords of the restoring cluster."""
-    pattern = re.compile(r"^(CREATE|ALTER) ROLE (%s)( |;)" % "|".join(SYSTEM_ROLES))
+    pattern = re.compile(r'^(CREATE|ALTER|DROP) ROLE (IF EXISTS )?"?(%s)"?( |;)' % "|".join(SYSTEM_ROLES))
     for line in text_lines:
         if pattern.match(line):
             continue
@@ -884,12 +884,12 @@ def etcdctl(args, endpoints=None, timeout=60):
         cmd = ["podman", "exec", CONTAINERS["etcd"]] + base + args
     else:
         render_etcd_dir_tls()
-        cmd = ["podman", "run", "--rm", "--network=host", "--entrypoint=[]",
+        cmd = ["podman", "run", "--rm", "--network=host", "--entrypoint=etcdctl",
                f"--volume={state_path('etcd')}:/etc/etcd:z",
                "--env=ETCDCTL_CACERT=/etc/etcd/tls/ca.crt",
                "--env=ETCDCTL_CERT=/etc/etcd/tls/node.crt",
                "--env=ETCDCTL_KEY=/etc/etcd/tls/node.key",
-               server_image()] + base + args
+               server_image()] + base[1:] + args
     return run(cmd, timeout=timeout)
 
 
@@ -920,10 +920,10 @@ def psql(sql, database="postgres", timeout=120, tuples=True):
     superuser. The password is read from a 0600 pgpass file, never from
     argv or the environment."""
     write_private(state_path("psql", "pgpass"), render_pgpass(read_secrets()["PG_SUPERUSER_PASSWORD"]))
-    cmd = ["podman", "run", "--rm", "-i", "--network=host", "--entrypoint=[]",
+    cmd = ["podman", "run", "--rm", "-i", "--network=host", "--entrypoint=psql",
            f"--volume={state_path('psql')}:/etc/psql:z", "--env=PGPASSFILE=/etc/psql/pgpass",
            "--env=PGCONNECT_TIMEOUT=5", server_image(),
-           "psql", "-X", "-q", "-h", "127.0.0.1", "-p", str(ports()["endpoint"]), "-U", SUPERUSER,
+           "-X", "-q", "-h", "127.0.0.1", "-p", str(ports()["endpoint"]), "-U", SUPERUSER,
            "-d", database, "-v", "ON_ERROR_STOP=1"] + (["-A", "-t"] if tuples else [])
     last = None
     for attempt in range(6):
@@ -1137,11 +1137,26 @@ def self_member():
     }
 
 
+MEMBERS_CACHE = "members.json"
+
+
 def cluster_members(rdb=None):
-    """Members of this instance's cluster, this one always included"""
+    """Members of this instance's cluster, this one always included. The
+    last list read from Redis is cached: units start from the cache when
+    Redis is not reachable (e.g. while the whole NS8 cluster reboots)."""
     if not is_cluster():
         return [self_member()]
-    result = [m for m in members(rdb) if m["module_id"] != env("MODULE_ID")]
+    try:
+        others = [m for m in members(rdb) if m["module_id"] != env("MODULE_ID")]
+        write_if_changed(state_path(MEMBERS_CACHE), json.dumps(others, sort_keys=True), 0o644)
+    except Exception as ex:
+        warning(f"Cluster records not readable, using the cached member list: {ex}")
+        try:
+            with open(state_path(MEMBERS_CACHE)) as fp:
+                others = [m for m in json.load(fp) if m.get("module_id") != env("MODULE_ID")]
+        except (FileNotFoundError, ValueError):
+            others = []
+    result = list(others)
     result.append(self_member())
     result.sort(key=lambda m: member_sort_key(m["module_id"]))
     return result
@@ -1291,7 +1306,9 @@ def render_component(component, member_list=None):
         text = render_patroni({
             "module_id": env("MODULE_ID"), "scope": cluster_id(), "host": host, "ports": p,
             "secrets": secrets_values, "etcd_hosts": etcd_hosts(member_list),
-            "max_connections": max_connections(), "replication_mode": replication_mode(),
+            # Cluster settings are applied through the DCS (apply_dynamic_config):
+            # the bootstrap values stay fixed, so changing them restarts nothing
+            "max_connections": DEFAULT_MAX_CONNECTIONS, "replication_mode": "async",
         })
         changed |= write_if_changed(state_path("patroni", "patroni.yml"), text)
     elif component == "pgproxy":
@@ -1642,3 +1659,23 @@ def pick_endpoint(endpoints, node=""):
         if e["module_id"] == env("MODULE_ID"):
             return e
     return endpoints[0]
+
+
+def run_reconcile(removed="", timer=False):
+    """Locked reconciliation; returns {"result", "changes"[, "error"|"reason"]}"""
+    if not role():
+        return {"result": "skipped", "changes": [], "reason": "not_configured"}
+    lock = with_lock_nb("membership") if timer else with_lock("membership")
+    if lock is None:
+        return {"result": "skipped", "changes": [], "reason": "busy"}
+    try:
+        changes = reconcile(removed=removed)
+        if changes:
+            log("Reconciled: " + ", ".join(changes))
+        return {"result": "ok", "changes": changes}
+    except Exception as ex:
+        error(f"Reconciliation failed: {ex}")
+        return {"result": "error", "changes": [], "error": str(ex)[:300]}
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()

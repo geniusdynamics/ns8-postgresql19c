@@ -23,8 +23,7 @@ if not pgha.role():
     sys.exit(0)
 if str(event.get("node_id", event.get("node", ""))) not in ("", pgha.env("NODE_ID")):
     # Another node: refresh the endpoint member list only
-    import subprocess
-    subprocess.run(["pgha-reconcile"], stdout=subprocess.DEVNULL)
+    pgha.run_reconcile()
     sys.exit(0)
 
 pgha._vpn_cache.clear()

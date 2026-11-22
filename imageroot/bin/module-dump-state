@@ -19,6 +19,7 @@ import sys
 
 import pgha
 
+os.chdir(pgha.state_dir())
 DUMP = "postgresql.dump"
 tmp = DUMP + ".tmp"
 
@@ -32,7 +33,7 @@ if not primary:
 
 print("Dumping all PostgreSQL databases from the primary", file=sys.stderr)
 proc = subprocess.Popen(["podman", "exec", "-u", "postgres", pgha.CONTAINERS["patroni"], "pg_dumpall",
-                         "--clean", "--if-exists", "--quote-all-identifiers"],
+                         "--quote-all-identifiers"],
                         stdout=subprocess.PIPE, text=True)
 with open(tmp, "w") as fp:
     for line in pgha.filter_dump(proc.stdout):

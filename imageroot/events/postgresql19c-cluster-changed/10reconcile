@@ -9,7 +9,6 @@
 # cluster refresh their client endpoint and etcd membership.
 
 import json
-import subprocess
 import sys
 
 import pgha
@@ -19,4 +18,4 @@ if not pgha.is_cluster() or event.get("cluster_id") != pgha.cluster_id():
     sys.exit(0)
 if event.get("module_id") == pgha.env("MODULE_ID"):
     sys.exit(0)
-subprocess.run(["pgha-reconcile"], stdout=subprocess.DEVNULL)
+pgha.run_reconcile()

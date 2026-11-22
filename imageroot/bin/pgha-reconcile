@@ -13,42 +13,18 @@
 #   - reload the client endpoint when the member list changed
 #   - promote the local etcd learner once it caught up
 #   - on the primary: remove from etcd the members whose module was removed
-#   - with OpenBao: copy the cluster secrets to OpenBao, or refresh the
-#     local cache from it
+#   - with OpenBao: push the shared secrets written while it was unavailable
 # Output: {"result": "ok"|"skipped"|"error", "changes": [...]}
 # Usage: pgha-reconcile [--timer] [--removed MODULE_ID]
 #
 
-import fcntl
 import json
 import sys
 
 import pgha
 
 args = sys.argv[1:]
-timer = "--timer" in args
-removed = args[args.index("--removed") + 1] if "--removed" in args else ""
-result = {"result": "ok", "changes": []}
-
-if not pgha.role():
-    json.dump({"result": "skipped", "changes": [], "reason": "not_configured"}, sys.stdout)
-    sys.exit(0)
-
-lock = pgha.with_lock_nb("membership") if timer else pgha.with_lock("membership")
-if lock is None:
-    json.dump({"result": "skipped", "changes": [], "reason": "busy"}, sys.stdout)
-    sys.exit(0)
-
-try:
-    result["changes"] = pgha.reconcile(removed=removed)
-except Exception as ex:
-    print(pgha._agent().SD_ERR + f"Reconciliation failed: {ex}", file=sys.stderr)
-    result = {"result": "error", "changes": [], "error": str(ex)[:300]}
-finally:
-    fcntl.flock(lock, fcntl.LOCK_UN)
-    lock.close()
-
-if result["changes"]:
-    print("Reconciled: " + ", ".join(result["changes"]), file=sys.stderr)
+result = pgha.run_reconcile(removed=args[args.index("--removed") + 1] if "--removed" in args else "",
+                            timer="--timer" in args)
 json.dump(result, sys.stdout)
-sys.exit(0 if result["result"] != "error" else 1)
+sys.exit(1 if result["result"] == "error" else 0)
