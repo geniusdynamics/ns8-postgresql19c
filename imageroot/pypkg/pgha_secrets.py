@@ -37,6 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import openbao_client
 import pgha
 
 OPENBAO_ENV = "openbao.env"
@@ -407,13 +408,92 @@ def vault_settings():
         "vault_mount": pgha.env("PG_VAULT_MOUNT", "secret") or "secret",
         "vault_path": pgha.env("PG_VAULT_PATH", "postgresql19c") or "postgresql19c",
         "vault_tls_skip_verify": pgha.env("PG_VAULT_TLS_SKIP_VERIFY") == "1",
+        # token: the pasted VAULT_TOKEN; provisioned: the module's own token
+        # issued by the ns8-openbao instance vault_provider
+        "vault_auth": pgha.env("PG_VAULT_AUTH", "token") or "token",
+        "vault_provider": pgha.env("PG_VAULT_PROVIDER"),
     }
 
 
+def cluster_group(cluster_id=None):
+    """ns8-openbao group of the members of one PostgreSQL cluster: it holds
+    the shared secrets (replication, superuser, CA). Lowercase letters,
+    digits and dashes, ending with a letter (ns8-openbao group ID format)."""
+    slug = "".join(c if c.isalnum() else "-" for c in (cluster_id or pgha.cluster_id()).lower()).strip("-")
+    return f"postgresql19c-{slug}"[:57].rstrip("-") + "-peers"
+
+
+def provisioned_wanted(settings=None):
+    settings = settings or vault_settings()
+    return bool(settings["vault_enabled"] and settings["vault_auth"] == "provisioned"
+                and settings["vault_provider"])
+
+
+class ProvisionedTokenAuth:
+    """Auth provider of provisioned mode: a token stored by openbao_client
+    (the module token, or the token of a granted group). A 403 marks the
+    tokens for provisioning again at the next timer step."""
+
+    method = "provisioned"
+
+    def __init__(self, group_id=None, state_dir=None):
+        self.group_id = group_id
+        self.state_dir = state_dir
+
+    def token(self):
+        if self.group_id:
+            return openbao_client.read_group_token(self.group_id, self.state_dir)
+        return openbao_client.read_token(self.state_dir)
+
+    def invalidate(self):
+        openbao_client.mark_reprovision(self.state_dir)
+
+
+class RoutingVault:
+    """Provisioned mode: the shared secrets go to the cluster group
+    (ns8-kv/groups/<group>/), the others to the module prefix
+    (ns8-kv/modules/<module>/). Same interface as OpenBaoBackend."""
+
+    name = "openbao"
+
+    def __init__(self, module, group=None):
+        self.module = module
+        self.group = group
+
+    def _for(self, name):
+        if name in SHARED_SECRETS:
+            if not self.group:
+                raise OpenBaoUnavailable("the cluster group is not granted yet")
+            return self.group
+        return self.module
+
+    @property
+    def address(self):
+        return self.module.address
+
+    def api(self, method, path, body=None):
+        return self.module.api(method, path, body)
+
+    def secret_path(self, name):
+        return self._for(name).secret_path(name)
+
+    def get(self, name):
+        return self._for(name).get(name)
+
+    def set(self, name, value, create_only=False):
+        return self._for(name).set(name, value, create_only)
+
+    def delete(self, name):
+        return self._for(name).delete(name)
+
+    def list(self):
+        return sorted(set(self.module.list()) | set(self.group.list() if self.group else []))
+
+
 def auth_provider(env=None, token=None):
-    """The auth provider of the configured method. Only the pasted token
-    exists today (VAULT_AUTH_METHOD=token, the default); a provisioned
-    AppRole is a planned second method."""
+    """The auth provider of the pasted-token method (VAULT_AUTH_METHOD=token,
+    the default). Provisioned mode uses ProvisionedTokenAuth through
+    provisioned_vault()."""
     env = env if env is not None else read_openbao_env()
     if token is not None:
         return StaticTokenAuth(token)
@@ -423,8 +503,27 @@ def auth_provider(env=None, token=None):
     return StaticTokenAuth(env.get("VAULT_TOKEN", ""))
 
 
+def provisioned_vault(settings, scope=None, state_dir=None):
+    """The RoutingVault of provisioned mode, from the openbao_client state"""
+    state = openbao_client.load_state(state_dir)
+    if not state.get("address") or not openbao_client.read_token(state_dir):
+        raise OpenBaoUnavailable("no provisioned OpenBao token yet")
+    mount = state.get("kv_mount") or openbao_client.KV_MOUNT
+    skip = settings.get("vault_tls_skip_verify", False)
+    module = OpenBaoBackend(state["address"], ProvisionedTokenAuth(state_dir=state_dir), mount,
+                            state.get("kv_prefix"), "", skip)
+    group = openbao_client.granted_group(cluster_group(scope), state_dir)
+    shared = None
+    if group:
+        shared = OpenBaoBackend(state["address"], ProvisionedTokenAuth(group["group_id"], state_dir), mount,
+                                group["kv_prefix"], "", skip)
+    return RoutingVault(module, shared)
+
+
 def make_vault(settings=None, scope=None, address=None, token=None):
     settings = settings or vault_settings()
+    if settings.get("vault_auth") == "provisioned" and token is None:
+        return provisioned_vault(settings, scope)
     env = read_openbao_env()
     return OpenBaoBackend(address if address is not None else env.get("VAULT_ADDR", ""),
                           auth_provider(env, token),
@@ -436,8 +535,36 @@ def make_vault(settings=None, scope=None, address=None, token=None):
 def manager(scope=None):
     """The SecretManager of this instance, with OpenBao when enabled"""
     settings = vault_settings()
-    vault = make_vault(settings, scope) if settings["vault_enabled"] else None
+    vault = None
+    if settings["vault_enabled"]:
+        try:
+            vault = make_vault(settings, scope)
+        except OpenBaoUnavailable as ex:
+            # Provisioned mode before approval: the local secrets are used
+            pgha.log(f"OpenBao not available yet, using the local secrets: {ex}")
     return SecretManager(vault=vault)
+
+
+def client_step(settings=None, run=None):
+    """Provisioned mode timer step: get or refresh this module's token
+    (with the database engine), and ask for the cluster group when it is
+    not granted. Return (status, warnings). Never raises on OpenBao errors."""
+    settings = settings or vault_settings()
+    wanted = provisioned_wanted(settings)
+    provider = settings["vault_provider"] or ""
+    status = openbao_client.maintain(provider, True, run=run, wanted=wanted)
+    warnings = []
+    if wanted and status in ("provisioned", "reprovisioned", "renewed", "fresh") \
+            and not openbao_client.granted_group(cluster_group()):
+        try:
+            openbao_client.request_access(provider, True, [cluster_group()], run=run)
+        except openbao_client.ClientError as ex:
+            pgha.log(f"OpenBao group request not recorded: {ex.code}")
+    if status == "pending":
+        warnings.append({"id": "openbao_client_pending", "items": [provider]})
+    elif status == "dropped":
+        warnings.append({"id": "openbao_client_dropped", "items": []})
+    return status, warnings
 
 
 def sync_shared():
@@ -479,16 +606,19 @@ def database_engine_config(host, port, username, password, allowed_roles):
     }
 
 
-def register_database_engine(vault, mount, name, host, port, password, allowed_roles, rotate=True):
-    """Enable the database secrets engine at `mount` if needed, configure
+def register_database_engine(vault, mount, name, host, port, password, allowed_roles, rotate=True,
+                             provisioned=False):
+    """Enable the database secrets engine at `mount` if needed (not in
+    provisioned mode: ns8-openbao mounted ns8-db-<module> already), configure
     the connection `name`, then rotate its root credential so that only
     OpenBao knows it"""
-    try:
-        vault.api("GET", f"sys/mounts/{mount}")
-    except OpenBaoHTTPError as ex:
-        if ex.status not in (400, 404):
-            raise
-        vault.api("POST", f"sys/mounts/{mount}", {"type": "database"})
+    if not provisioned:
+        try:
+            vault.api("GET", f"sys/mounts/{mount}")
+        except OpenBaoHTTPError as ex:
+            if ex.status not in (400, 404):
+                raise
+            vault.api("POST", f"sys/mounts/{mount}", {"type": "database"})
     vault.api("POST", f"{mount}/config/{name}",
               database_engine_config(host, port, ENGINE_ROLE, password, allowed_roles))
     if rotate:

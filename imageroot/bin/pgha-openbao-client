@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Timer step of provisioned mode (pgha-openbao-client.timer, hourly):
+# provision the tokens once the OpenBao administrator approved the module,
+# renew them every 8 hours, provision again around day 25 or after a 403,
+# ask for the cluster group, then push the shared secrets written while
+# OpenBao was unavailable. When provisioning is disabled or the approval
+# revoked, the tokens are dropped and the local secrets are used. Never
+# blocks PostgreSQL: units start from the local cache.
+
+import sys
+
+import agent
+import pgha_secrets as ps
+
+settings = ps.vault_settings()
+status, warnings = ps.client_step(settings)
+print(f"OpenBao client: {status}", file=sys.stderr)
+for warning in warnings:
+    print(agent.SD_WARNING + f"OpenBao client: {warning['id']} {' '.join(warning['items'])}", file=sys.stderr)
+if ps.provisioned_wanted(settings) and status not in ("pending", "dropped", "retry", "inactive"):
+    ps.sync_shared()

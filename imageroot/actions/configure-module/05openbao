@@ -14,12 +14,18 @@
 # OpenBao-only secrets to local files when asked, and warns about the
 # others (the ns8-kumomta pattern).
 #
+# vault_auth "provisioned": the module's own token comes from the
+# ns8-openbao instance vault_provider (client provisioning, see
+# openbao_client.py); the shared secrets live in the group
+# postgresql19c-<cluster id>-peers, the others under modules/<module id>.
+#
 
 import json
 import os
 import sys
 
 import agent
+import openbao_client
 import pgha
 import pgha_secrets as ps
 
@@ -27,6 +33,33 @@ data = json.load(sys.stdin)
 settings = ps.vault_settings()
 wanted = data.get("vault_enabled")
 if wanted is None:
+    sys.exit(0)
+
+auth = data.get("vault_auth") or settings["vault_auth"]
+if wanted and auth == "provisioned":
+    # Provisioned mode: no pasted token. Ask the ns8-openbao instance for
+    # this module's token (with the database engine) and the cluster group.
+    # Until the OpenBao administrator approves, the local secrets are used
+    # and the timer pgha-openbao-client.timer keeps trying.
+    provider = data.get("vault_provider") or settings["vault_provider"]
+    env_new = {
+        "PG_VAULT_ENABLED": "1",
+        "PG_VAULT_AUTH": "provisioned",
+        "PG_VAULT_PROVIDER": provider,
+        "PG_VAULT_TLS_SKIP_VERIFY": "1" if data.get("vault_tls_skip_verify", settings["vault_tls_skip_verify"]) else "0",
+    }
+    agent.mset_env(env_new)
+    os.environ.update(env_new)
+    new_settings = ps.vault_settings()
+    try:
+        openbao_client.request_access(provider, True, [ps.cluster_group(data.get("cluster_id") or None)])
+    except openbao_client.ClientError as ex:
+        if ex.code not in ("client_not_approved",):
+            pgha.validation_error("vault_provider", provider, ex.code)
+    status, warnings = ps.client_step(new_settings)
+    for warning in warnings:
+        pgha.add_warning(warning)
+    print(f"OpenBao client: {status}", file=sys.stderr)
     sys.exit(0)
 
 if wanted:
@@ -57,8 +90,11 @@ if wanted:
     except ps.OpenBaoHTTPError as ex:
         pgha.validation_error("vault_token", "", "openbao_denied" if ex.status in (401, 403) else "openbao_error")
     ps.write_openbao_env(address, token)
+    if settings["vault_auth"] == "provisioned":
+        ps.client_step(dict(settings, vault_enabled=False))  # revoke the provisioned tokens
     agent.mset_env({
         "PG_VAULT_ENABLED": "1",
+        "PG_VAULT_AUTH": "token",
         "PG_VAULT_MOUNT": new["vault_mount"],
         "PG_VAULT_PATH": new["vault_path"],
         "PG_VAULT_TLS_SKIP_VERIFY": "1" if new["vault_tls_skip_verify"] else "0",
@@ -76,4 +112,5 @@ elif settings["vault_enabled"]:
     if items:
         pgha.add_warning({"id": "openbao_items_unavailable", "items": items})
     ps.remove_openbao_env()
+    ps.client_step(dict(settings, vault_enabled=False))  # revoke the provisioned tokens
     agent.mset_env({"PG_VAULT_ENABLED": "0"})

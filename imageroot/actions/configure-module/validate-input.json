@@ -130,6 +130,16 @@
         "vault_tls_skip_verify": {
             "type": "boolean"
         },
+        "vault_auth": {
+            "type": "string",
+            "enum": ["token", "provisioned"],
+            "description": "token: the pasted vault_token (default); provisioned: the module's own token issued by the ns8-openbao instance vault_provider (client provisioning). The shared secrets then go to the group postgresql19c-<cluster id>-peers"
+        },
+        "vault_provider": {
+            "type": "string",
+            "pattern": "^([a-z][a-z0-9-]{0,62}[0-9])?$",
+            "description": "Module ID of the ns8-openbao instance of provisioned mode, e.g. openbao1"
+        },
         "vault_copy_to_local": {
             "type": "boolean",
             "description": "When turning OpenBao off: copy the OpenBao-only secrets to local files first"

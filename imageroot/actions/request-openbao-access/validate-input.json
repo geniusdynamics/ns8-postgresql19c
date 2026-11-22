@@ -1,0 +1,11 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "request-openbao-access input",
+    "description": "Ask an ns8-openbao instance for this module's own token, the database engine and the group postgresql19c-<cluster id>-peers (replication and superuser secrets). The OpenBao administrator approves the request",
+    "examples": [{}, {"openbao_module_id": "openbao1"}],
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+        "openbao_module_id": {"type": "string", "pattern": "^([a-z][a-z0-9-]{0,62}[0-9])?$"}
+    }
+}

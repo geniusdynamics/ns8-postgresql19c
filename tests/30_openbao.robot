@@ -76,6 +76,35 @@ Turning OpenBao off without copying warns
     ${ids} =    Evaluate    [w["id"] for w in $out["warnings"]]
     Should Contain    ${ids}    openbao_items_unavailable
 
+Provisioned mode status without a provider
+    ${status} =    Run Action    ${mid}    get-openbao-client-status
+    Should Be Equal    ${status}[vault_auth]    token
+    Should Not Be True    ${status}[client][active]
+    Should Be Equal    ${status}[group]    postgresql19c-${mid}-peers
+    ${output} =    Action Should Fail    ${mid}    request-openbao-access    {}
+    Should Contain    ${output}    required
+    ${output} =    Action Should Fail    ${mid}    configure-module    {"role": "standalone", "vault_enabled": true, "vault_auth": "provisioned"}
+    Should Contain    ${output}    vault_provider
+
+Provisioned mode against a fake ns8-openbao
+    Execute Command    mkdir -p /tmp/pg-obc && chmod 755 /tmp/pg-obc
+    Put File    ${CURDIR}/unit/fake_bao_api.py    /tmp/pg-obc/fake_bao_api.py    mode=0644
+    Put File    ${CURDIR}/openbao_client_flow.py    /tmp/pg-obc/openbao_client_flow.py    mode=0644
+    ${out}  ${err}  ${rc} =    Execute Command    runagent -m ${mid} python3 /tmp/pg-obc/openbao_client_flow.py
+    ...    return_rc=True    return_stderr=True
+    Should Be Equal As Integers    ${rc}    0    ${err}
+    ${r} =    Evaluate    json.loads($out)    modules=json
+    Should Be Equal    ${r}[first]    pending
+    Should Be Equal    ${r}[approved]    provisioned
+    Should Be True    ${r}[group_path]
+    Should Be True    ${r}[module_path]
+    Should Be Equal    ${r}[database_mount]    ns8-db-${mid}
+    Should Be Equal As Integers    ${r}[engine_calls]    2
+    Should Be Equal    ${r}[dir_mode]    0o700
+    Should Be Equal    ${r}[revoked]    dropped
+    Should Be True    ${r}[fallback_local]
+    Execute Command    rm -rf /tmp/pg-obc
+
 Clean up
     ${rc} =    Execute Command    remove-module --no-preserve ${mid}
     ...    return_rc=True  return_stdout=False
