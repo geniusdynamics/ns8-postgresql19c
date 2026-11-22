@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Databases of the cluster: name, owner, size, owning client, whether the
+# owner can log in. No secrets (any reader).
+
+import json
+import sys
+
+import agent
+import pgha
+
+databases = []
+error = ""
+if pgha.role():
+    try:
+        databases = json.loads(pgha.psql(pgha.LIST_DATABASES_SQL, timeout=60).strip() or "null") or []
+    except Exception as ex:
+        print(agent.SD_WARNING + f"Cannot list the databases: {ex}", file=sys.stderr)
+        error = "primary_unreachable"
+json.dump({"databases": databases, "error": error}, fp=sys.stdout)

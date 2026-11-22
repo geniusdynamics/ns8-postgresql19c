@@ -1,0 +1,26 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Databases",
+    "$id": "http://nethserver.org/json-schema/task/output/postgresql19c/list-databases",
+    "type": "object",
+    "required": ["databases", "error"],
+    "properties": {
+        "databases": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "owner", "size_bytes", "client_id", "owner_can_login"],
+                "properties": {
+                    "name": {"type": "string"},
+                    "owner": {"type": "string"},
+                    "size_bytes": {"type": "integer"},
+                    "client_id": {"type": "string"},
+                    "app": {"type": "string"},
+                    "clients": {"type": "array", "items": {"type": "string"}},
+                    "owner_can_login": {"type": "boolean"}
+                }
+            }
+        },
+        "error": {"type": "string"}
+    }
+}

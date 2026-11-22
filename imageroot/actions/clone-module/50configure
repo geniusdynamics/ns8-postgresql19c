@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# A clone gets a live copy of the data and the state of the source. It
+# becomes a standalone server of its own: the etcd data of the source
+# store is wiped, the CA and the cluster secrets are replaced, and Patroni
+# starts the copied data as the primary of a new cluster named after the
+# clone. Approvals of peers are not copied (state-filter-rules.rsync).
+#
+
+import os
+import sys
+
+import agent
+import agent.tasks
+import pgha
+
+cert, key = pgha.make_ca(f"ns8-postgresql19c CA {os.environ['MODULE_ID']}")
+pgha.store_ca(cert, key)
+pgha.set_marker("etcd")
+for name in ("patroni/reset-data",):
+    if os.path.exists(pgha.state_path(name)):
+        os.unlink(pgha.state_path(name))
+agent.mset_env({"PG_ROLE": "", "PG_CLUSTER_ID": "", "PG_ETCD_INITIAL_CLUSTER": "", "PG_ETCD_INITIAL_STATE": "new",
+                "PG_ALLOW_SAME_NODE": "0", "PG_VAULT_ENABLED": "0"})
+ret = agent.tasks.run(agent_id=os.environ["AGENT_ID"], action="configure-module", data={
+    "role": "standalone",
+    "replication_mode": pgha.replication_mode(),
+    "max_connections": pgha.max_connections(),
+    "pgadmin_enabled": pgha.env("PGADMIN_ENABLED") == "1" and bool(pgha.env("TRAEFIK_HOST") or pgha.env("PGADMIN_PATH")),
+    "host": pgha.env("TRAEFIK_HOST"),
+    "pgadmin_path": pgha.env("PGADMIN_PATH"),
+    "http2https": pgha.env("TRAEFIK_HTTP2HTTPS", "True").lower() == "true",
+    "lets_encrypt": False,
+})
+agent.assert_exp(ret["exit_code"] == 0, "configure-module failed")

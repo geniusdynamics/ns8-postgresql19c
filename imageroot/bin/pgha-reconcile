@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Membership check of this instance, run by events (a member joined, left
+# or was removed), by the reconcile-cluster action and every 5 minutes by
+# pgha-reconcile.timer. It acts only on drift:
+#   - publish the service records of this instance
+#   - reload the client endpoint when the member list changed
+#   - promote the local etcd learner once it caught up
+#   - on the primary: remove from etcd the members whose module was removed
+#   - with OpenBao: push the shared secrets written while it was unavailable
+# Output: {"result": "ok"|"skipped"|"error", "changes": [...]}
+# Usage: pgha-reconcile [--timer] [--removed MODULE_ID]
+#
+
+import json
+import sys
+
+import pgha
+
+args = sys.argv[1:]
+result = pgha.run_reconcile(removed=args[args.index("--removed") + 1] if "--removed" in args else "",
+                            timer="--timer" in args)
+json.dump(result, sys.stdout)
+sys.exit(1 if result["result"] == "error" else 0)

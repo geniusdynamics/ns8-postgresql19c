@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# The cluster VPN address of a node changed. On this node, re-render and
+# restart the units with the new address. A cluster member's etcd peer
+# URL is kept in the store: the member updates it through its peers
+# (docs/operations.md describes the recovery if that fails).
+#
+
+import json
+import sys
+
+import agent
+import pgha
+
+event = json.load(sys.stdin)
+if not pgha.role():
+    sys.exit(0)
+if str(event.get("node_id", event.get("node", ""))) not in ("", pgha.env("NODE_ID")):
+    # Another node: refresh the endpoint member list only
+    pgha.run_reconcile()
+    sys.exit(0)
+
+pgha._vpn_cache.clear()
+host = pgha.local_host()
+try:
+    for m in pgha.etcd_members():
+        if m["name"] == pgha.env("MODULE_ID") and pgha.etcd_url(host, pgha.ports()["etcd_peer"]) not in m["peer_urls"]:
+            pgha.etcdctl(["member", "update", m["id"], f"--peer-urls={pgha.etcd_url(host, pgha.ports()['etcd_peer'])}"])
+except Exception as ex:
+    print(agent.SD_WARNING + f"Cannot update the etcd peer address: {ex}", file=sys.stderr)
+for unit in pgha.wanted_units():
+    pgha.render_component([k for k, v in pgha.UNITS.items() if v == unit][0])
+    pgha.systemctl("try-restart", unit, check=False)
+pgha.publish_records()

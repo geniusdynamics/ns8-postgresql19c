@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Load the pg_dumpall dump of the backup into the new standalone server.
+# A backup taken on a replica or a witness holds no dump: restore the
+# backup of the member that was primary at backup time instead.
+#
+
+import os
+import subprocess
+import sys
+
+import agent
+import pgha
+
+DUMP = "postgresql.dump"
+if not os.path.exists(DUMP):
+    print(agent.SD_WARNING + "The backup has no database dump", file=sys.stderr)
+    sys.exit(0)
+with open(DUMP) as fp:
+    first = fp.readline()
+if first.startswith(pgha.REPLICA_DUMP_MARKER):
+    print(agent.SD_WARNING + "This backup comes from a cluster member that was not the primary: it holds the "
+          "settings only. Restore the backup of the primary to get the data", file=sys.stderr)
+    os.unlink(DUMP)
+    sys.exit(0)
+
+agent.assert_exp(pgha.wait_primary_endpoint(timeout=300), "PostgreSQL is not ready")
+with open(DUMP) as fp:
+    proc = subprocess.run(["podman", "exec", "-i", "-u", "postgres", pgha.CONTAINERS["patroni"], "psql", "-p", str(pgha.ports()["pg"]), "-X", "-q",
+                           "-v", "ON_ERROR_STOP=1", "-d", "postgres"], stdin=fp, capture_output=True, text=True)
+if proc.returncode != 0:
+    print(agent.SD_ERR + "Restore of the dump failed: " + proc.stderr.strip()[-800:], file=sys.stderr)
+    sys.exit(1)
+os.unlink(DUMP)
+print("Databases restored", file=sys.stderr)

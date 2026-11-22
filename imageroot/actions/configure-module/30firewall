@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Direct access from outside the cluster (per instance). On: the public
+# endpoint port is opened in the node firewall, to every source (public
+# service) or, with an allowlist, only to those sources (firewalld rich
+# rules). Off: nothing is opened; the port answers only on the VPN (trusted
+# zone) and loopback. The applied rules are kept in state/firewall.json to
+# remove exactly them later. The public endpoint itself also enforces the
+# allowlist and TLS (pgproxy).
+#
+
+import sys
+
+import agent
+import pgha
+
+pgha.reload_env()
+if pgha.apply_firewall():
+    print("Firewall updated for the public endpoint", file=sys.stderr)

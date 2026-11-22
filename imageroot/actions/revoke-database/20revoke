@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Disable the owner role of a client database (keeps the data), or drop
+# the database and the role with "drop": true. Only the client that owns
+# the database (or an administrator) can do it.
+#
+
+import json
+import sys
+
+import pgha
+import pgha_secrets as ps
+
+data = json.load(sys.stdin)
+if not pgha.role():
+    pgha.validation_error("", "", "not_configured")
+client_id = pgha.resolve_client_id(data)
+database = (data.get("database") or "").strip() or pgha.database_name_for(client_id)
+if not pgha.valid_database_name(database):
+    pgha.validation_error("database", database, "invalid")
+caller = pgha.caller_module()
+info = json.loads(pgha.psql(pgha.ownership_sql(database, client_id)).strip() or "{}")
+revoked = False
+if info.get("login") is not None:
+    if pgha.parse_comment(info["login"]).get("ns8-client") != client_id:
+        pgha.validation_error("database", database, "login_role_owned_by_other")
+    drop = bool(data.get("drop"))
+    if drop:
+        creator = pgha.parse_comment(info.get("database")).get("ns8-client")
+        # Only the creator of the database (or an administrator) drops it
+        if caller and creator not in (None, client_id):
+            pgha.validation_error("drop", True, "not_the_database_creator")
+    pgha.psql(pgha.revoke_sql(database, client_id, drop=drop), tuples=False)
+    revoked = True
+    print(f"Access of {client_id} to {database} {'dropped' if drop else 'disabled'}", file=sys.stderr)
+mgr = ps.manager()
+mgr.delete_secret(f"client/{pgha.login_role_name(client_id)}")
+json.dump({"client_id": client_id, "database": database, "revoked": revoked,
+           "dropped": revoked and bool(data.get("drop"))}, fp=sys.stdout)

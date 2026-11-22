@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# A cluster member that is removed hands the primary role over (graceful
+# switchover), stops PostgreSQL and leaves the etcd store, so the cluster
+# does not keep counting its vote. Best effort: if this node is already
+# gone, the module-removed event makes the primary remove the etcd member.
+#
+
+import sys
+
+import agent
+import pgha
+
+try:
+    pgha.apply_firewall(enabled=False)
+except Exception as ex:
+    print(agent.SD_WARNING + f"Closing the public endpoint failed: {ex}", file=sys.stderr)
+
+try:
+    if pgha.is_cluster():
+        member_list = pgha.cluster_members()
+        if [m for m in member_list if m["module_id"] != pgha.env("MODULE_ID")]:
+            pgha.leave_cluster(member_list)
+    wrdb = agent.redis_connect(privileged=True)
+    cid = pgha.cluster_id()
+    pgha.unpublish_records(wrdb)
+    if pgha.is_cluster():
+        pgha.fire_cluster_changed(f"{pgha.env('MODULE_ID')}-removed", rdb=wrdb, cid=cid)
+except Exception as ex:
+    print(agent.SD_WARNING + f"Leaving the cluster failed: {ex}", file=sys.stderr)

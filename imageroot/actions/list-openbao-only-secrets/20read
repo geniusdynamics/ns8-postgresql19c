@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Secrets kept in OpenBao only (today: the consumer credentials published
+# for OpenBao-aware applications), with whether the current token can
+# read each one. Names and paths only, never values (any reader). The
+# bootstrap secrets always have a local copy and are never listed.
+
+import json
+import sys
+
+import pgha_secrets as ps
+
+settings = ps.vault_settings()
+items = []
+copyable = True
+if settings["vault_enabled"]:
+    mgr = ps.manager()
+    for item in mgr.vault_only_items():
+        try:
+            readable = mgr.vault.get(item["name"]) is not None
+        except ps.SecretError:
+            readable = False
+        copyable = copyable and readable
+        items.append({"kind": "client_credentials" if item["name"].startswith("client/") else "secret",
+                      "name": item["name"], "path": item["path"], "readable": readable})
+json.dump({"vault_enabled": settings["vault_enabled"], "copyable": copyable and bool(items), "items": items},
+          fp=sys.stdout)

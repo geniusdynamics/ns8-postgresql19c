@@ -1,0 +1,33 @@
+#!/bin/sh
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Entry point of the etcd container. The settings come from the ETCD_*
+# environment variables rendered by the module (etcd reads them natively).
+# The data directory is wiped when the module asked for it: a member that
+# joins a cluster, or leaves it, starts with an empty store.
+#
+
+set -eu
+
+conf=/etc/etcd
+
+if [ -e "${conf}/reset-data" ]; then
+    echo "Removing the etcd data directory as requested by the module" >&2
+    rm -rf /var/lib/etcd/member
+    rm -f "${conf}/reset-data"
+fi
+# etcd refuses a data directory readable by others
+chmod 0700 /var/lib/etcd
+
+if [ -d /var/lib/etcd/member ]; then
+    # An existing member restarts from its data: the initial-cluster
+    # settings only apply to a new member
+    unset ETCD_INITIAL_CLUSTER ETCD_INITIAL_CLUSTER_STATE ETCD_INITIAL_CLUSTER_TOKEN
+fi
+
+exec etcd

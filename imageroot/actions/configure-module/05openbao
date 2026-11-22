@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# OpenBao / Vault settings (opt-in). The address and token go to the 0600
+# file state/openbao.env; the mount and path are plain settings. Turning
+# OpenBao on checks that it answers and that it does not already hold
+# different values for the shared secrets of this cluster (a joining
+# member adopts the cluster values instead). Turning it off copies the
+# OpenBao-only secrets to local files when asked, and warns about the
+# others (the ns8-kumomta pattern).
+#
+
+import json
+import os
+import sys
+
+import agent
+import pgha
+import pgha_secrets as ps
+
+data = json.load(sys.stdin)
+settings = ps.vault_settings()
+wanted = data.get("vault_enabled")
+if wanted is None:
+    sys.exit(0)
+
+if wanted:
+    env = ps.read_openbao_env()
+    address = (data.get("vault_address") or env.get("VAULT_ADDR", "")).rstrip("/")
+    token = data.get("vault_token") or env.get("VAULT_TOKEN", "")
+    new = {
+        "vault_mount": data.get("vault_mount") or settings["vault_mount"],
+        "vault_path": data.get("vault_path") or settings["vault_path"],
+        "vault_tls_skip_verify": bool(data.get("vault_tls_skip_verify", settings["vault_tls_skip_verify"])),
+    }
+    joining = data["role"] in ("join", "witness") and pgha.role() not in ("join", "witness")
+    leaving = data["role"] == "standalone" and pgha.is_cluster()
+    scope = data.get("cluster_id") if joining else pgha.env("MODULE_ID") if leaving else pgha.cluster_id()
+    vault = ps.make_vault(new, scope=scope, address=address, token=token)
+    try:
+        if not joining and not leaving:
+            mgr = ps.SecretManager(vault=vault)
+            conflicts = [n for n in ps.SHARED_SECRETS
+                         if mgr.local.get(n) and vault.get(n) not in (None, mgr.local.get(n))]
+            if conflicts:
+                print(agent.SD_ERR + "OpenBao holds other values for " + ", ".join(conflicts), file=sys.stderr)
+                pgha.validation_error("vault_path", new["vault_path"], "openbao_secret_conflict")
+        else:
+            vault.get(pgha.SECRET_KEYS[0])
+    except ps.OpenBaoUnavailable:
+        pgha.validation_error("vault_address", address, "openbao_unreachable")
+    except ps.OpenBaoHTTPError as ex:
+        pgha.validation_error("vault_token", "", "openbao_denied" if ex.status in (401, 403) else "openbao_error")
+    ps.write_openbao_env(address, token)
+    agent.mset_env({
+        "PG_VAULT_ENABLED": "1",
+        "PG_VAULT_MOUNT": new["vault_mount"],
+        "PG_VAULT_PATH": new["vault_path"],
+        "PG_VAULT_TLS_SKIP_VERIFY": "1" if new["vault_tls_skip_verify"] else "0",
+    })
+elif settings["vault_enabled"]:
+    mgr = ps.manager()
+    if data.get("vault_copy_to_local"):
+        try:
+            copied, failed = mgr.copy_to_local()
+        except ps.SecretError:
+            failed = [i["name"] for i in mgr.vault_only_items()]
+        if failed:
+            pgha.validation_error("vault_copy_to_local", True, "openbao_copy_failed")
+    items = [i["name"] for i in mgr.vault_only_items()]
+    if items:
+        pgha.add_warning({"id": "openbao_items_unavailable", "items": items})
+    ps.remove_openbao_env()
+    agent.mset_env({"PG_VAULT_ENABLED": "0"})

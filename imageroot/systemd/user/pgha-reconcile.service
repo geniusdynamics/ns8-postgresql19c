@@ -1,0 +1,14 @@
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+[Unit]
+Description=Periodic check of the PostgreSQL cluster membership
+
+[Service]
+Type=oneshot
+EnvironmentFile=%S/state/environment
+WorkingDirectory=%S/state
+ExecStart=runagent pgha-reconcile --timer
+SyslogIdentifier=%u

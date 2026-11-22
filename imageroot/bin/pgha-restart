@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Restart the running units of the instance, e.g. after an update. The
+# primary first hands its role over to a healthy replica (a graceful
+# switchover), so clients see a short reconnection instead of a failover.
+#
+
+import sys
+import pgha
+
+if not pgha.role():
+    sys.exit(0)
+if pgha.runs_postgres() and pgha.unit_active(pgha.UNITS["patroni"]):
+    if pgha.is_cluster() and not pgha.switchover_away():
+        print("No switchover before the restart: no healthy replica", file=sys.stderr)
+for unit in pgha.active_units():
+    pgha.systemctl("try-restart", unit, check=False)

@@ -1,0 +1,14 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Admission of a member",
+    "$id": "http://nethserver.org/json-schema/task/output/postgresql19c/admit-member",
+    "type": "object",
+    "required": ["cluster_id", "etcd_initial_cluster", "allow_same_node", "replication_mode", "max_connections"],
+    "properties": {
+        "cluster_id": {"type": "string"},
+        "etcd_initial_cluster": {"type": "string"},
+        "allow_same_node": {"type": "boolean"},
+        "replication_mode": {"type": "string", "enum": ["async", "sync"]},
+        "max_connections": {"type": "integer"}
+    }
+}

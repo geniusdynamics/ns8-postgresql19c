@@ -1,0 +1,18 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Admit a member",
+    "$id": "http://nethserver.org/json-schema/task/input/postgresql19c/admit-member",
+    "description": "Called by an ns8-postgresql19c instance that joins the cluster of this instance (role pgpeer, plus an approval with set-peer-access). Adds it as an etcd learner and returns the cluster secrets to the caller when asked",
+    "examples": [{"module_id": "postgresql19c2", "node_id": "2", "host": "10.5.4.2", "etcd_peer_port": 20004, "role": "join", "want_secrets": true}],
+    "type": "object",
+    "required": ["module_id", "node_id", "host", "etcd_peer_port", "role"],
+    "additionalProperties": false,
+    "properties": {
+        "module_id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]*[0-9]+$"},
+        "node_id": {"type": "string", "pattern": "^[0-9]+$"},
+        "host": {"type": "string", "format": "ipv4"},
+        "etcd_peer_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+        "role": {"type": "string", "enum": ["join", "witness"]},
+        "want_secrets": {"type": "boolean"}
+    }
+}

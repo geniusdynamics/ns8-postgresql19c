@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# A module was removed. If it was a member of this cluster (also when its
+# node died and its destroy-module could not run), the primary removes
+# its etcd member and every member drops it from the client endpoint. The
+# login role of a removed consumer is disabled; its database is kept.
+
+import json
+import sys
+
+import agent
+import pgha
+
+event = json.load(sys.stdin)
+removed = event.get("module", "")
+if not removed or removed == pgha.env("MODULE_ID") or not pgha.role():
+    sys.exit(0)
+
+if pgha.is_cluster():
+    pgha.run_reconcile(removed=removed)
+
+# Consumer: disable the owner role of its default database, on the primary
+if pgha.runs_postgres() and pgha.is_local_primary():
+    login = pgha.login_role_name(removed)
+    try:
+        comment = pgha.psql(f"SELECT COALESCE(shobj_description(oid, 'pg_authid'), '') FROM pg_roles "
+                            f"WHERE rolname = {pgha.quote_literal(login)};").strip()
+        if comment == f"ns8-client={removed}":
+            pgha.psql(f"ALTER ROLE {pgha.quote_ident(login)} WITH NOLOGIN PASSWORD NULL;", tuples=False)
+            print(f"Login role {login} disabled: its module {removed} was removed", file=sys.stderr)
+    except Exception as ex:
+        print(agent.SD_WARNING + f"Cannot disable the login role of {removed}: {ex}", file=sys.stderr)

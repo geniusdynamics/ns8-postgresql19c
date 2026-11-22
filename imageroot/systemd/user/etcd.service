@@ -1,0 +1,46 @@
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# etcd member of the consensus store used by Patroni. Host network: the
+# client port listens on loopback and on the node cluster VPN address, the
+# peer port on the VPN address; both require a certificate signed by the
+# cluster CA (mutual TLS). The settings are rendered in state/etcd by
+# pgha-prepare at every start.
+#
+[Unit]
+Description=etcd member of the PostgreSQL cluster
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+EnvironmentFile=%S/state/environment
+WorkingDirectory=%S/state
+Restart=always
+TimeoutStartSec=300
+TimeoutStopSec=60
+ExecStartPre=/bin/rm -f %t/%N.pid %t/%N.ctr-id
+ExecStartPre=runagent pgha-prepare etcd
+ExecStart=/usr/bin/podman run \
+    --detach \
+    --conmon-pidfile=%t/%N.pid \
+    --cidfile=%t/%N.ctr-id \
+    --cgroups=no-conmon \
+    --replace --name=%N \
+    --network=host \
+    --cap-drop=all \
+    --cap-add=fowner,chown \
+    --security-opt=no-new-privileges \
+    --entrypoint=/usr/local/bin/ns8-etcd-start \
+    --env-file=%S/state/etcd/etcd.env \
+    --volume=etcd-data:/var/lib/etcd:Z \
+    --volume=%S/state/etcd:/etc/etcd:Z \
+    ${POSTGRESQL19C_SERVER_IMAGE}
+ExecStop=/usr/bin/podman stop --ignore --cidfile=%t/%N.ctr-id -t 30
+ExecStopPost=/usr/bin/podman rm --ignore -f --cidfile=%t/%N.ctr-id
+PIDFile=%t/%N.pid
+Type=forking
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,38 @@
+#!/bin/sh
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Entry point of the Patroni container. Runs as root inside the rootless
+# container (the module user on the node): copies the rendered
+# configuration and TLS files where only the postgres user reads them,
+# wipes the data directory when the module asked for it (a member that
+# joins a cluster starts from a base backup of the primary), then starts
+# Patroni as postgres. Patroni starts and stops PostgreSQL.
+#
+
+set -eu
+
+conf=/etc/patroni
+run=/run/patroni
+
+install -d -o postgres -g postgres -m 0700 "${run}"
+install -o postgres -g postgres -m 0600 "${conf}/patroni.yml" "${run}/patroni.yml"
+for f in ca.crt node.crt node.key; do
+    install -o postgres -g postgres -m 0600 "${conf}/tls/${f}" "${run}/${f}"
+done
+
+if [ -e "${conf}/reset-data" ]; then
+    echo "Removing the PostgreSQL data directory as requested by the module" >&2
+    rm -rf /var/lib/postgresql/19
+    rm -f "${conf}/reset-data"
+fi
+
+chown postgres:postgres /var/lib/postgresql
+install -d -o postgres -g postgres -m 0700 /var/lib/postgresql/19
+install -d -o postgres -g postgres -m 2775 /var/run/postgresql
+
+exec gosu postgres patroni "${run}/patroni.yml"
