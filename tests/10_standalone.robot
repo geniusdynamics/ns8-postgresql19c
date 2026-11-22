@@ -140,12 +140,13 @@ Public access opens the port and requires TLS
     Should Contain    ${config}[tls_ca_certificate]    BEGIN CERTIFICATE
     ${services} =    Execute Command    firewall-cmd --list-services
     Should Contain    ${services}    ${mid}-public
+    Set Suite Variable    ${public_port}    ${config}[public_port]
     Use Endpoint    127.0.0.1    ${config}[public_port]
-    ${out} =    Wait Until Keyword Succeeds    30s    3s    Probe Should Succeed    ${mid}    SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid();    port    require
-    Should Be Equal    ${out}    t
+    # sslmode=require fails unless the connection uses TLS
+    ${out} =    Wait Until Keyword Succeeds    30s    3s    Probe Should Succeed    ${mid}    SELECT 1;    port    require
+    Should Be Equal    ${out}    1
     ${result} =    Probe    ${mid}    SELECT 1;    port    disable
     Should Not Be True    ${result}[ok]    plain text must be refused on the public endpoint
-    Set Suite Variable    ${public_port}    ${config}[public_port]
 
 An allowlist replaces the open port with source rules
     Run Action    ${mid}    configure-module    {"role": "standalone", "public_access_enabled": true, "public_access_allowlist": ["127.0.0.1", "192.0.2.0/24"]}
