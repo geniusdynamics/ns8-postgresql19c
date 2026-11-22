@@ -1,0 +1,22 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Cluster status",
+    "$id": "http://nethserver.org/json-schema/task/output/postgresql19c/get-cluster-status",
+    "type": "object",
+    "required": ["role", "ha_mode", "members", "etcd", "leader", "voters", "quorum_ok", "failure_tolerance", "warnings"],
+    "properties": {
+        "role": {"type": "string"},
+        "ha_mode": {"type": "string"},
+        "cluster_id": {"type": "string"},
+        "leader": {"type": "string"},
+        "timeline": {"type": "integer"},
+        "members": {"type": "array", "items": {"type": "object", "required": ["name", "role", "state", "lag_bytes"]}},
+        "etcd": {"type": "array", "items": {"type": "object", "required": ["name", "learner", "healthy"]}},
+        "voters": {"type": "integer"},
+        "healthy_voters": {"type": "integer"},
+        "quorum_size": {"type": "integer"},
+        "quorum_ok": {"type": "boolean"},
+        "failure_tolerance": {"type": "integer"},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+    }
+}

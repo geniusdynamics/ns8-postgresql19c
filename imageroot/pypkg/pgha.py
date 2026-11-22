@@ -1470,3 +1470,175 @@ def cluster_status(rdb=None):
     status["members_count"] = len(member_list)
     status["postgres_members"] = pg_members
     return status
+
+
+# ---------------------------------------------------------------------------
+# Units and reconciliation
+# ---------------------------------------------------------------------------
+
+def wanted_units(value=None, pgadmin=None):
+    """Units that run for a role, in start order"""
+    value = role() if value is None else value
+    if not value:
+        return []
+    units = [UNITS["etcd"]]
+    if runs_postgres(value):
+        units.append(UNITS["patroni"])
+    units.append(UNITS["pgproxy"])
+    if (env("PGADMIN_ENABLED") == "1") if pgadmin is None else pgadmin:
+        units.append(UNITS["pgadmin"])
+    return units
+
+
+def active_units():
+    return [u for u in UNITS.values() if unit_active(u)]
+
+
+def with_lock_nb(name="membership"):
+    """Like with_lock(), None when another process holds the lock"""
+    os.makedirs(state_path("locks"), exist_ok=True)
+    fd = os.open(state_path("locks", name), os.O_CREAT | os.O_RDWR, 0o600)
+    fp = os.fdopen(fd, "r+")
+    try:
+        fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fp.close()
+        return None
+    return fp
+
+
+def module_installed(module_id, rdb):
+    return bool(rdb.hget("cluster/module_node", module_id))
+
+
+def reconcile(removed="", rdb=None):
+    """One pass of the membership check (see bin/pgha-reconcile). Returns
+    the list of changes made."""
+    changes = []
+    agent = _agent()
+    wrdb = agent.redis_connect(privileged=True)
+    rdb = rdb or agent.redis_connect(use_replica=True)
+    if publish_records(wrdb):
+        changes.append("records")
+    member_list = cluster_members(rdb)
+    if unit_active(UNITS["pgproxy"]) and render_component("pgproxy", member_list):
+        systemctl("reload", UNITS["pgproxy"], check=False)
+        changes.append("endpoint-members")
+    if not is_cluster():
+        return changes
+    try:
+        etcd_list = etcd_members(other_etcd_endpoints(member_list) + [etcd_url("127.0.0.1", ports()["etcd_client"])])
+    except Exception as ex:
+        warning(f"Cannot read the etcd members: {ex}")
+        return changes
+    mine = [m for m in etcd_list if m["name"] == env("MODULE_ID")]
+    if mine and mine[0]["learner"] and promote_self(member_list, timeout=30):
+        changes.append("etcd-promoted")
+    # The primary removes the etcd members of removed modules: their quorum
+    # vote would otherwise be missing forever
+    if runs_postgres() and is_local_primary():
+        known = {m["module_id"] for m in member_list}
+        for m in etcd_list:
+            name = m["name"]
+            if not name or name in known:
+                continue
+            if name == removed or not module_installed(name, rdb):
+                try:
+                    if remove_etcd_member(name, member_list):
+                        changes.append(f"etcd-removed-{name}")
+                except Exception as ex:
+                    warning(f"Cannot remove the etcd member {name}: {ex}")
+    try:
+        import pgha_secrets
+        if pgha_secrets.sync_shared():
+            changes.append("openbao-sync")
+    except Exception as ex:
+        warning(f"OpenBao sync skipped: {ex}")
+    return changes
+
+
+def reload_env():
+    """Actions see the variables written by earlier steps only in the
+    environment file: reload it (removed variables are written empty)"""
+    os.environ.update(_agent().read_envfile(state_path("environment")))
+
+
+WARNINGS_FILE = ".configure-warnings.json"
+
+
+def add_warning(item):
+    try:
+        with open(state_path(WARNINGS_FILE)) as fp:
+            items = json.load(fp)
+    except (FileNotFoundError, ValueError):
+        items = []
+    items.append(item)
+    write_private(state_path(WARNINGS_FILE), json.dumps(items))
+
+
+def pop_warnings():
+    try:
+        with open(state_path(WARNINGS_FILE)) as fp:
+            items = json.load(fp)
+        os.unlink(state_path(WARNINGS_FILE))
+        return items
+    except (FileNotFoundError, ValueError):
+        return []
+
+
+def dcs_config(member_list=None):
+    """Dynamic configuration of the cluster (GET /config), {} if unknown"""
+    candidates = []
+    if runs_postgres():
+        candidates.append((local_host(), ports()["patroni"]))
+    for m in member_list or []:
+        if m.get("patroni_port") and runs_postgres(m.get("role")):
+            candidates.append((m["host"], int(m["patroni_port"])))
+    for host, port in candidates:
+        try:
+            status, data = rest(host, port, "/config", timeout=3)
+            if status == 200 and isinstance(data, dict):
+                return data
+        except Exception:
+            continue
+    return {}
+
+
+def dcs_setting(name, member_list=None):
+    cfg = dcs_config(member_list)
+    if name == "synchronous_mode":
+        return cfg.get("synchronous_mode")
+    return ((cfg.get("postgresql") or {}).get("parameters") or {}).get(name)
+
+
+def client_endpoints(rdb=None):
+    """[{module_id, node, host, port, ro_port}] of the client endpoints of
+    this cluster: every instance runs one (witnesses included)"""
+    rdb = rdb or _agent().redis_connect(use_replica=True)
+    result = []
+    if is_cluster():
+        for rec in _agent().list_service_providers(rdb, SERVICE, "tcp"):
+            if rec.get("cluster_id") != cluster_id() or rec.get("module_id") == env("MODULE_ID"):
+                continue
+            try:
+                result.append({"module_id": rec["module_id"], "node": str(rec.get("node", "")),
+                               "host": rec["host"], "port": int(rec["port"]),
+                               "ro_port": int(rec.get("ro_port") or 0)})
+            except (KeyError, ValueError):
+                continue
+    p = ports()
+    result.append({"module_id": env("MODULE_ID"), "node": env("NODE_ID"), "host": local_host(),
+                   "port": p["endpoint"], "ro_port": p["endpoint_ro"]})
+    return sorted(result, key=lambda e: member_sort_key(e["module_id"]))
+
+
+def pick_endpoint(endpoints, node=""):
+    """The endpoint on the caller's node if there is one, else this
+    instance's endpoint"""
+    for e in endpoints:
+        if node and e["node"] == str(node):
+            return e
+    for e in endpoints:
+        if e["module_id"] == env("MODULE_ID"):
+            return e
+    return endpoints[0]

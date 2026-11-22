@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Settings of the backup. A restored instance always comes back
+# standalone, as the first member of its own cluster: a member of an old
+# cluster must never talk to it again (other members re-join it, see
+# docs/operations.md). OpenBao settings come back off: the token file is
+# not in the backup.
+#
+
+import json
+import sys
+
+import agent
+
+request = json.load(sys.stdin)
+original = request["environment"]
+keep = ("PG_REPLICATION_MODE", "PG_MAX_CONNECTIONS", "PGADMIN_ENABLED", "PGADMIN_EMAIL",
+        "TRAEFIK_HOST", "TRAEFIK_HTTP2HTTPS", "PG_VAULT_MOUNT", "PG_VAULT_PATH")
+agent.mset_env({k: original[k] for k in keep if k in original})
+agent.mset_env({"PG_ROLE": "", "PG_CLUSTER_ID": "", "PG_ETCD_INITIAL_CLUSTER": "",
+                "PG_ETCD_INITIAL_STATE": "new", "PG_ALLOW_SAME_NODE": "0", "PG_VAULT_ENABLED": "0",
+                "PG_RESTORED_FROM_ROLE": original.get("PG_ROLE", "")})

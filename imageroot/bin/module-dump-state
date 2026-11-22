@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Runs before the Restic backup, in the state directory. Only the current
+# primary dumps the databases (pg_dumpall, plain SQL, without the system
+# roles that Patroni recreates): replicas and witnesses write a marker
+# instead, so a cluster does not store the same data once per member, and
+# the backup of every member still holds its settings and secrets.
+#
+
+import os
+import subprocess
+import sys
+
+import pgha
+
+DUMP = "postgresql.dump"
+tmp = DUMP + ".tmp"
+
+primary = pgha.runs_postgres() and pgha.is_local_primary()
+if not primary:
+    with open(tmp, "w") as fp:
+        fp.write(f"{pgha.REPLICA_DUMP_MARKER} (role {pgha.role() or 'none'}, cluster {pgha.cluster_id()})\n")
+    os.replace(tmp, DUMP)
+    print(f"Not the primary: no database dump on {os.environ.get('MODULE_ID')}", file=sys.stderr)
+    sys.exit(0)
+
+print("Dumping all PostgreSQL databases from the primary", file=sys.stderr)
+proc = subprocess.Popen(["podman", "exec", "-u", "postgres", pgha.CONTAINERS["patroni"], "pg_dumpall",
+                         "--clean", "--if-exists", "--quote-all-identifiers"],
+                        stdout=subprocess.PIPE, text=True)
+with open(tmp, "w") as fp:
+    for line in pgha.filter_dump(proc.stdout):
+        fp.write(line)
+if proc.wait() != 0:
+    os.unlink(tmp)
+    print(pgha._agent().SD_ERR + "pg_dumpall failed", file=sys.stderr)
+    sys.exit(1)
+os.replace(tmp, DUMP)

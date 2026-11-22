@@ -1,0 +1,20 @@
+#!/bin/bash
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Custom roles. Their action names do not start with get-, list-, show- or
+# read-: the builtin reader role cannot run them.
+#
+# - pgclient: consumer modules (authorization postgresql19c@any:pgclient)
+#   get and drop their own database and credentials
+# - pgpeer: other ns8-postgresql19c instances (postgresql19c@any:pgpeer)
+#   join a cluster (admit-member, also gated by set-peer-access) and ask
+#   for a membership check (reconcile-cluster)
+
+set -e
+exec 1>&2
+redis-exec SADD "${AGENT_ID}/roles/pgclient" "grant-database" "revoke-database"
+redis-exec SADD "${AGENT_ID}/roles/pgpeer" "admit-member" "reconcile-cluster"

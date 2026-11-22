@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Settings of the instance (any reader). Secrets are never returned: only
+# *_set booleans.
+
+import json
+import sys
+
+import agent
+import pgha
+import pgha_peer_access as access
+import pgha_secrets as ps
+
+rdb = agent.redis_connect(use_replica=True)
+member_list = pgha.cluster_members(rdb) if pgha.role() else []
+sync = pgha.dcs_setting("synchronous_mode", member_list) if pgha.role() else None
+max_conn = pgha.dcs_setting("max_connections", member_list) if pgha.role() else None
+vault = ps.vault_settings()
+secrets_values = pgha.read_secrets()
+p = pgha.ports()
+try:
+    peers = access.peer_candidates(rdb)
+except Exception as ex:
+    print(agent.SD_WARNING + f"Cannot list the other instances: {ex}", file=sys.stderr)
+    peers = []
+try:
+    vault_only = [i["name"] for i in ps.manager().vault_only_items()]
+except Exception:
+    vault_only = []
+
+json.dump({
+    "role": pgha.role(),
+    "configured": bool(pgha.role()),
+    "cluster_id": pgha.cluster_id() if pgha.role() else "",
+    "ha_mode": pgha.ha_mode(),
+    "replication_mode": ("sync" if sync else "async") if sync is not None else pgha.replication_mode(),
+    "max_connections": int(max_conn) if max_conn else pgha.max_connections(),
+    "allow_same_node": pgha.env("PG_ALLOW_SAME_NODE") == "1",
+    "vpn_address": pgha.vpn_ip(rdb=rdb),
+    "endpoint": {"host": pgha.local_host(), "port": p["endpoint"], "ro_port": p["endpoint_ro"]},
+    "ports": {k: v for k, v in p.items()},
+    "version": pgha.PG_VERSION,
+    "members": [{"module_id": m["module_id"], "node": m["node"], "role": m["role"]} for m in member_list],
+    "cluster_candidates": pgha.cluster_candidates(rdb) if pgha.role() in ("", "standalone") else [],
+    "peer_candidates": peers,
+    "pgadmin_enabled": pgha.env("PGADMIN_ENABLED") == "1",
+    "host": pgha.env("TRAEFIK_HOST"),
+    "http2https": pgha.env("TRAEFIK_HTTP2HTTPS", "True").lower() == "true",
+    "lets_encrypt": pgha.env("TRAEFIK_LETS_ENCRYPT", "False").lower() == "true",
+    "pgadmin_email": pgha.env("PGADMIN_EMAIL"),
+    "pgadmin_password_set": bool(secrets_values.get("PGADMIN_PASSWORD")),
+    "superuser_password_set": bool(secrets_values.get("PG_SUPERUSER_PASSWORD")),
+    "replication_password_set": bool(secrets_values.get("PG_REPLICATION_PASSWORD")),
+    "vault_enabled": vault["vault_enabled"],
+    "vault_address": vault["vault_address"],
+    "vault_token_set": vault["vault_token_set"],
+    "vault_mount": vault["vault_mount"],
+    "vault_path": vault["vault_path"],
+    "vault_tls_skip_verify": vault["vault_tls_skip_verify"],
+    "vault_only_secrets": vault_only,
+}, fp=sys.stdout)

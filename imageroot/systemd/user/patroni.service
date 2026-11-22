@@ -1,0 +1,47 @@
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Patroni, which runs PostgreSQL 19 as the primary or as a streaming
+# replica and fails over through the etcd store. Host network: PostgreSQL
+# listens on loopback and on the node cluster VPN address, the Patroni
+# REST API on the VPN address. patroni.yml holds the cluster passwords:
+# it is rendered 0600 by pgha-prepare at every start and never backed up.
+#
+[Unit]
+Description=Patroni and PostgreSQL 19
+Wants=etcd.service
+After=etcd.service
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+EnvironmentFile=%S/state/environment
+WorkingDirectory=%S/state
+Restart=always
+# A replica may copy the whole database from the primary before it runs
+TimeoutStartSec=infinity
+TimeoutStopSec=150
+ExecStartPre=/bin/rm -f %t/%N.pid %t/%N.ctr-id
+ExecStartPre=runagent pgha-prepare patroni
+ExecStart=/usr/bin/podman run \
+    --detach \
+    --conmon-pidfile=%t/%N.pid \
+    --cidfile=%t/%N.ctr-id \
+    --cgroups=no-conmon \
+    --replace --name=%N \
+    --network=host \
+    --shm-size=256m \
+    --entrypoint=/usr/local/bin/ns8-patroni-start \
+    --volume=pgdata:/var/lib/postgresql:Z \
+    --volume=%S/state/patroni:/etc/patroni:Z \
+    ${POSTGRESQL19C_SERVER_IMAGE}
+ExecStartPost=runagent pgha-wait patroni
+ExecStop=/usr/bin/podman stop --ignore --cidfile=%t/%N.ctr-id -t 120
+ExecStopPost=/usr/bin/podman rm --ignore -f --cidfile=%t/%N.ctr-id
+PIDFile=%t/%N.pid
+Type=forking
+
+[Install]
+WantedBy=default.target

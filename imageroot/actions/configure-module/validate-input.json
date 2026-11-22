@@ -1,0 +1,60 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Configure postgresql19c",
+    "$id": "http://nethserver.org/json-schema/task/input/postgresql19c/configure-module",
+    "description": "Choose the role of the instance (standalone server, first member of a new cluster, member or witness of an existing cluster) and its settings",
+    "examples": [
+        {"role": "standalone"},
+        {"role": "initial", "replication_mode": "async"},
+        {"role": "join", "cluster_id": "postgresql19c1"},
+        {"role": "witness", "cluster_id": "postgresql19c1"},
+        {"role": "standalone", "pgadmin_enabled": true, "host": "pgadmin.example.org", "http2https": true, "lets_encrypt": false},
+        {"role": "initial", "vault_enabled": true, "vault_address": "http://10.5.4.1:20001", "vault_token": "s.xxxx", "vault_mount": "secret", "vault_path": "postgresql19c"}
+    ],
+    "type": "object",
+    "required": ["role"],
+    "additionalProperties": false,
+    "properties": {
+        "role": {
+            "type": "string",
+            "enum": ["standalone", "initial", "join", "witness"],
+            "description": "standalone: one server. initial: first member of a new cluster, other instances can join it. join: become a PostgreSQL replica of the cluster cluster_id. witness: an etcd voter of cluster_id without PostgreSQL (the third vote of a two-node cluster). A member that becomes standalone leaves its cluster and restarts empty"
+        },
+        "cluster_id": {
+            "type": "string",
+            "pattern": "^([a-z][a-z0-9_-]*[0-9]+)?$",
+            "description": "With join or witness: the cluster to join (get-configuration cluster_candidates)"
+        },
+        "replication_mode": {
+            "type": "string",
+            "enum": ["async", "sync"],
+            "description": "Cluster-wide. async (default): a failover can lose the last transactions not yet replicated. sync: a commit waits for one synchronous replica, and only that replica can be promoted"
+        },
+        "max_connections": {
+            "type": "integer",
+            "minimum": 20,
+            "maximum": 5000,
+            "description": "Cluster-wide max_connections; members restart one at a time when it changes"
+        },
+        "allow_same_node": {
+            "type": "boolean",
+            "description": "With initial: let several members run on the same node. For tests only: such a cluster survives no node failure"
+        },
+        "pgadmin_enabled": {"type": "boolean"},
+        "host": {
+            "type": "string",
+            "description": "pgAdmin host name, published by Traefik",
+            "anyOf": [{"format": "hostname", "pattern": "\\."}, {"maxLength": 0}]
+        },
+        "http2https": {"type": "boolean"},
+        "lets_encrypt": {"type": "boolean"},
+        "pgadmin_email": {"type": "string", "format": "email"},
+        "vault_enabled": {"type": "boolean", "description": "Keep the shared secrets in OpenBao or Vault KV v2 (a local copy is always kept)"},
+        "vault_address": {"type": "string", "pattern": "^(https?://[^\\s]+)?$"},
+        "vault_token": {"type": "string", "description": "Write only: get-configuration returns vault_token_set"},
+        "vault_mount": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+        "vault_path": {"type": "string", "pattern": "^[A-Za-z0-9_./-]{1,128}$"},
+        "vault_tls_skip_verify": {"type": "boolean"},
+        "vault_copy_to_local": {"type": "boolean", "description": "When turning OpenBao off: copy the OpenBao-only secrets to local files first"}
+    }
+}

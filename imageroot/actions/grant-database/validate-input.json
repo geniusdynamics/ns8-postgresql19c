@@ -1,0 +1,13 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Grant a database",
+    "$id": "http://nethserver.org/json-schema/task/input/postgresql19c/grant-database",
+    "description": "Role pgclient (authorization postgresql19c@any:pgclient). Create or update the database and owner role of the caller and return new credentials. A module caller always acts for itself; client_id is for administrators. See docs/integration.md",
+    "examples": [{}, {"database": "warpgate1"}, {"client_id": "myapp", "database": "myapp"}],
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+        "client_id": {"type": "string", "pattern": "^([a-z][a-z0-9_.-]{0,62})?$"},
+        "database": {"type": "string", "pattern": "^([a-z][a-z0-9_]{0,62})?$"}
+    }
+}

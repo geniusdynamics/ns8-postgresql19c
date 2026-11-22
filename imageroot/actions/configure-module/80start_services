@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Start the units of the role. A unit restarts only when its rendered
+# configuration changed, when its data must be reset, or when it does not
+# run: saving the same settings does not interrupt a cluster member.
+# Then apply the cluster-wide settings kept by Patroni (replication mode,
+# max_connections) and wait for PostgreSQL.
+#
+
+import os
+import sys
+
+import agent
+import pgha
+
+pgha.reload_env()
+units = pgha.wanted_units()
+for unit in pgha.UNITS.values():
+    if unit not in units:
+        pgha.systemctl("disable", "--now", unit, check=False)
+
+component_of = {v: k for k, v in pgha.UNITS.items()}
+for unit in units:
+    component = component_of[unit]
+    reset = os.path.exists(pgha.state_path(component, "reset-data"))
+    changed = pgha.render_component(component)
+    active = pgha.unit_active(unit)
+    pgha.systemctl("enable", unit)
+    if unit == pgha.UNITS["pgproxy"] and active and changed and not reset:
+        pgha.systemctl("reload", unit, check=False)
+    elif changed or reset or not active:
+        print(f"Starting {unit}", file=sys.stderr)
+        pgha.systemctl("restart", unit)
+    if unit == pgha.UNITS["etcd"] and os.path.exists(pgha.state_path(".joined")):
+        # A joining member is an etcd learner until it caught up: promote
+        # it to voter before Patroni uses the store
+        pgha.promote_self(pgha.cluster_members())
+    agent.set_progress(20 + 60 * (units.index(unit) + 1) // len(units))
+
+pgha.systemctl("enable", "--now", "pgha-reconcile.timer", check=False)
+
+if pgha.runs_postgres():
+    state = pgha.wait_patroni(timeout=900)
+    if not state:
+        print(agent.SD_WARNING + "PostgreSQL is not running yet: see the Patroni logs", file=sys.stderr)
+    elif pgha.role() != "join":
+        if not pgha.wait_primary_endpoint(timeout=300):
+            print(agent.SD_WARNING + "The client endpoint does not reach a primary yet", file=sys.stderr)
+# Cluster-wide settings live in the DCS: any member running PostgreSQL
+# applies them for the whole cluster
+if pgha.runs_postgres():
+    try:
+        conn_before = pgha.dcs_setting("max_connections")
+        if pgha.apply_dynamic_config(pgha.replication_mode(), pgha.max_connections()):
+            print("Cluster settings updated", file=sys.stderr)
+            if str(conn_before) != str(pgha.max_connections()):
+                pgha.restart_pending()
+    except Exception as ex:
+        print(agent.SD_WARNING + f"Cannot apply the cluster settings: {ex}", file=sys.stderr)

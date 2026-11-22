@@ -1,0 +1,5 @@
+# clone-module: approvals of peers and runtime files are not copied
+- peer-access/
+- locks/
+- psql/
+- .configure-warnings.json

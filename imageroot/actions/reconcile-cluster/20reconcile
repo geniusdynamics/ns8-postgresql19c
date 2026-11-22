@@ -1,0 +1,9 @@
+#!/bin/bash
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Run the membership check now; prints its JSON result
+exec pgha-reconcile

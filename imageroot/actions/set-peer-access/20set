@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# An owner action: the reader and pgpeer roles cannot change approvals
+
+import json
+import sys
+
+import pgha_peer_access as access
+
+data = json.load(sys.stdin)
+access.set_peer_access(data["peer"], data["allowed"])
+json.dump({"peer": data["peer"], "allowed": data["allowed"]}, sys.stdout)

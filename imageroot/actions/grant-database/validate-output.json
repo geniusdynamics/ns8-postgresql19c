@@ -1,0 +1,36 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Database credentials",
+    "$id": "http://nethserver.org/json-schema/task/output/postgresql19c/grant-database",
+    "type": "object",
+    "required": ["client_id", "database", "username", "password", "host", "port", "ro_port", "endpoints", "ha_mode", "cluster_id", "tls", "sslmode", "url"],
+    "properties": {
+        "client_id": {"type": "string"},
+        "database": {"type": "string"},
+        "username": {"type": "string"},
+        "password": {"type": "string"},
+        "host": {"type": "string"},
+        "port": {"type": "integer"},
+        "ro_port": {"type": "integer"},
+        "endpoints": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["module_id", "node", "host", "port", "ro_port"],
+                "properties": {
+                    "module_id": {"type": "string"},
+                    "node": {"type": "string"},
+                    "host": {"type": "string"},
+                    "port": {"type": "integer"},
+                    "ro_port": {"type": "integer"}
+                }
+            }
+        },
+        "ha_mode": {"type": "string", "enum": ["standalone", "cluster"]},
+        "cluster_id": {"type": "string"},
+        "tls": {"type": "boolean"},
+        "sslmode": {"type": "string"},
+        "url": {"type": "string"},
+        "openbao_path": {"type": "string"}
+    }
+}
