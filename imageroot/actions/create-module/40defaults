@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Defaults of a new instance and the names of its TCP ports. Nothing runs
+# until configure-module chooses a role.
+
+import agent
+import pgha
+
+p = pgha.ports()
+agent.mset_env({
+    "PG_ROLE": "",
+    "PG_REPLICATION_MODE": "async",
+    "PG_MAX_CONNECTIONS": str(pgha.DEFAULT_MAX_CONNECTIONS),
+    "PG_PORT": str(p["pg"]),
+    "PATRONI_PORT": str(p["patroni"]),
+    "ETCD_CLIENT_PORT": str(p["etcd_client"]),
+    "ETCD_PEER_PORT": str(p["etcd_peer"]),
+    "ENDPOINT_PORT": str(p["endpoint"]),
+    "ENDPOINT_RO_PORT": str(p["endpoint_ro"]),
+    "PGADMIN_PORT": str(p["pgadmin"]),
+    "PUBLIC_PORT": str(p["public"]),
+    "PG_PUBLIC_ACCESS": "0",
+    "PG_PUBLIC_ALLOWLIST": "",
+    "PGADMIN_ENABLED": "0",
+    "PGADMIN_EMAIL": "admin@nethserver.org",
+})

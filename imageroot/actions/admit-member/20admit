@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# An ns8-postgresql19c instance joins the cluster of this instance.
+#
+# Checks: the caller is the module it claims to be (AGENT_TASK_USER) and
+# was approved here with set-peer-access; its address is the VPN address
+# of its node; its node has no member yet. Then the caller is added as an
+# etcd learner (a non-voting member: a joiner that never starts cannot
+# break the quorum) and the etcd initial cluster is returned, with the
+# cluster secrets when the caller cannot read them from OpenBao. The
+# output goes to the calling instance only (NS8 keeps task outputs under
+# this module's task keys); it is never logged.
+#
+
+import json
+import sys
+
+import agent
+import pgha
+import pgha_peer_access as access
+import pgha_secrets as ps
+
+data = json.load(sys.stdin)
+if not pgha.is_cluster():
+    pgha.validation_error("module_id", data["module_id"], "not_a_cluster_member")
+
+with access.authorized_peer(data["module_id"]) as peer:
+    rdb = agent.redis_connect(use_replica=True)
+    if pgha.vpn_ip(data["node_id"], rdb) != data["host"]:
+        pgha.validation_error("host", data["host"], "not_the_node_vpn_address")
+    member_list = pgha.cluster_members(rdb)
+    allow = pgha.env("PG_ALLOW_SAME_NODE") == "1"
+    for m in member_list:
+        if m["module_id"] != peer and m["node"] == data["node_id"] and not allow:
+            pgha.validation_error("node_id", data["node_id"], "node_already_member")
+
+    lock = pgha.with_lock("membership")
+    eps = [pgha.etcd_url(m["host"], m["etcd_client_port"]) for m in member_list]
+    peer_url = pgha.etcd_url(data["host"], data["etcd_peer_port"])
+    current = pgha.etcd_members(eps)
+    # A stale entry of the same peer (an earlier attempt) is replaced
+    for m in current:
+        if m["name"] == peer or peer_url in m["peer_urls"]:
+            proc = pgha.etcdctl(["member", "remove", m["id"]], endpoints=eps)
+            if proc.returncode != 0:
+                pgha.error(f"Cannot remove the stale etcd member of {peer}: {proc.stderr.strip()[-200:]}")
+                sys.exit(1)
+    added = pgha.etcd_json(["member", "add", peer, f"--peer-urls={peer_url}", "--learner"], endpoints=eps)
+    initial = pgha.etcd_initial_cluster(added.get("members", []), peer, peer_url)
+    print(f"{peer} (node {data['node_id']}) added as etcd learner of cluster {pgha.cluster_id()}", file=sys.stderr)
+
+    sync = pgha.dcs_setting("synchronous_mode", member_list)
+    output = {
+        "cluster_id": pgha.cluster_id(),
+        "etcd_initial_cluster": initial,
+        "allow_same_node": allow,
+        "replication_mode": ("sync" if sync else "async") if sync is not None else pgha.replication_mode(),
+        "max_connections": int(pgha.dcs_setting("max_connections", member_list) or pgha.max_connections()),
+    }
+    if data.get("want_secrets", True):
+        mgr = ps.SecretManager()
+        for name in ps.SHARED_SECRETS:
+            output[name] = mgr.local.get(name)
+    json.dump(output, fp=sys.stdout)

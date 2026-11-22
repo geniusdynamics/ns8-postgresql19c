@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Apply the role.
+#
+# join / witness: the instance asks a member of the cluster to add it as
+# an etcd learner (guarded action admit-member, role pgpeer, approved on
+# that member with set-peer-access). The cluster secrets (PostgreSQL and
+# Patroni passwords, CA) come from OpenBao when it is on and holds them,
+# otherwise from the admit-member output. They go to 0600 files only.
+# The local data is wiped: a replica starts from a base backup of the
+# primary.
+#
+# cluster role -> standalone with other members: the instance hands the
+# primary role over, leaves etcd, and restarts empty with new secrets.
+#
+
+import json
+import os
+import sys
+
+import agent
+import agent.tasks
+import pgha
+import pgha_secrets as ps
+
+pgha.reload_env()
+data = json.load(sys.stdin)
+new_role = data["role"]
+current = pgha.role()
+module_id = pgha.env("MODULE_ID")
+envmap = {
+    "PG_REPLICATION_MODE": data.get("replication_mode") or pgha.replication_mode(),
+    "PG_MAX_CONNECTIONS": str(data.get("max_connections") or pgha.max_connections()),
+}
+lock = pgha.with_lock("membership")
+
+
+def stop_data_units():
+    pgha.systemctl("stop", pgha.UNITS["patroni"], check=False)
+    pgha.systemctl("stop", pgha.UNITS["etcd"], check=False)
+
+
+def new_identity():
+    """Fresh secrets and CA of an instance that leaves its cluster"""
+    mgr = ps.SecretManager()
+    for name in pgha.CLUSTER_SECRET_KEYS:
+        mgr.local.set(name, pgha.new_password())
+    cert, key = pgha.make_ca(f"ns8-postgresql19c CA {module_id}")
+    pgha.store_ca(cert, key)
+
+
+if new_role in ("join", "witness") and current not in ("join", "witness"):
+    cid = data["cluster_id"].strip()
+    shared = None
+    if pgha.env("PG_VAULT_ENABLED") == "1":
+        try:
+            shared = ps.manager(scope=cid).fetch_shared()
+        except ps.SecretError as ex:
+            print(agent.SD_WARNING + f"Cluster secrets not read from OpenBao: {ex}", file=sys.stderr)
+        if shared:
+            print(f"Cluster secrets of {cid} read from OpenBao", file=sys.stderr)
+    host = pgha.vpn_ip()
+    request = {"module_id": module_id, "node_id": pgha.env("NODE_ID"), "host": host,
+               "etcd_peer_port": pgha.ports()["etcd_peer"], "role": new_role,
+               "want_secrets": shared is None}
+    admitted = None
+    for target in [m["module_id"] for m in pgha.members(wanted=cid)]:
+        ret = agent.tasks.run(agent_id=f"module/{target}", action="admit-member", data=request,
+                              extra={"isNotificationHidden": True})
+        if ret["exit_code"] == 0:
+            admitted = ret["output"]
+            break
+        print(agent.SD_WARNING + f"admit-member on {target} failed (exit code {ret['exit_code']})", file=sys.stderr)
+    if not admitted:
+        print(agent.SD_ERR + f"No member of {cid} admitted this instance: approve it on a member "
+              "(set-peer-access) and check that the cluster is healthy", file=sys.stderr)
+        pgha.validation_error("cluster_id", cid, "not_admitted")
+    if shared is None:
+        shared = {k: admitted[k] for k in ps.SHARED_SECRETS}
+    stop_data_units()
+    mgr = ps.SecretManager()
+    for name in pgha.CLUSTER_SECRET_KEYS:
+        mgr.local.set(name, shared[name])
+    pgha.store_ca(shared["CA_CERT"], shared["CA_KEY"])
+    pgha.set_marker("etcd")
+    if new_role == "join":
+        pgha.set_marker("patroni")
+    envmap.update({
+        "PG_ROLE": new_role, "PG_CLUSTER_ID": cid,
+        "PG_ETCD_INITIAL_CLUSTER": admitted["etcd_initial_cluster"], "PG_ETCD_INITIAL_STATE": "existing",
+        "PG_ALLOW_SAME_NODE": "1" if admitted.get("allow_same_node") else "0",
+        # Cluster settings: the member takes the ones of the cluster
+        "PG_REPLICATION_MODE": admitted.get("replication_mode") or "async",
+        "PG_MAX_CONNECTIONS": str(admitted.get("max_connections") or pgha.DEFAULT_MAX_CONNECTIONS),
+    })
+    with open(pgha.state_path(".joined"), "w") as fp:
+        fp.write(cid)
+
+elif new_role == "standalone" and current in pgha.CLUSTER_ROLES:
+    member_list = pgha.cluster_members()
+    others = [m for m in member_list if m["module_id"] != module_id]
+    if others:
+        try:
+            pgha.leave_cluster(member_list)
+        except Exception as ex:
+            print(agent.SD_ERR + f"Cannot leave the cluster: {ex}", file=sys.stderr)
+            pgha.validation_error("role", new_role, "cannot_leave_cluster")
+        old_cid = pgha.cluster_id()
+        new_identity()
+        pgha.set_marker("etcd")
+        pgha.set_marker("patroni")
+        envmap.update({"PG_ROLE": "standalone", "PG_CLUSTER_ID": module_id, "PG_ETCD_INITIAL_CLUSTER": "",
+                       "PG_ETCD_INITIAL_STATE": "new", "PG_ALLOW_SAME_NODE": "0"})
+        pgha.unpublish_records(agent.redis_connect(privileged=True))
+        with open(pgha.state_path(".left-cluster"), "w") as fp:
+            json.dump({"cluster_id": old_cid}, fp)
+    else:
+        # The last member of its cluster: the data stays
+        envmap.update({"PG_ROLE": "standalone"})
+
+elif new_role == "initial" and current != "initial":
+    envmap.update({"PG_ROLE": "initial", "PG_CLUSTER_ID": pgha.cluster_id(),
+                   "PG_ALLOW_SAME_NODE": "1" if data.get("allow_same_node") else "0"})
+
+elif new_role == "standalone" and not current:
+    envmap.update({"PG_ROLE": "standalone", "PG_CLUSTER_ID": module_id, "PG_ETCD_INITIAL_STATE": "new"})
+
+elif new_role == "initial" and "allow_same_node" in data:
+    envmap["PG_ALLOW_SAME_NODE"] = "1" if data["allow_same_node"] else "0"
+
+if data.get("pgadmin_enabled") is not None:
+    envmap["PGADMIN_ENABLED"] = "1" if data["pgadmin_enabled"] else "0"
+if data.get("pgadmin_email"):
+    envmap["PGADMIN_EMAIL"] = data["pgadmin_email"]
+if "pgadmin_path" in data:
+    envmap["PGADMIN_PATH"] = data["pgadmin_path"]
+if "pgadmin_ip_allowlist" in data:
+    envmap["PGADMIN_IP_ALLOWLIST"] = ",".join(pgha.normalize_network(i) for i in data["pgadmin_ip_allowlist"])
+if "public_access_enabled" in data:
+    envmap["PG_PUBLIC_ACCESS"] = "1" if data["public_access_enabled"] else "0"
+if "public_access_allowlist" in data:
+    envmap["PG_PUBLIC_ALLOWLIST"] = ",".join(pgha.public_allowlist(data["public_access_allowlist"]))
+
+agent.mset_env(envmap)

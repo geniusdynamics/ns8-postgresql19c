@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Health of the instance and of its cluster: members, roles, replication
+# lag, etcd voters and quorum, warnings. No secrets (any reader).
+
+import json
+import sys
+
+import pgha
+
+json.dump(pgha.cluster_status(), fp=sys.stdout)

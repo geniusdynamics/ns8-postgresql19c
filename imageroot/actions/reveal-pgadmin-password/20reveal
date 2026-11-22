@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# pgAdmin login of this instance, for administrators only: the action
+# name does not start with get-, list-, show- or read-, so readers cannot
+# run it, and it is in no custom role. Never logged.
+
+import json
+import sys
+
+import pgha
+import pgha_secrets as ps
+
+json.dump({"email": pgha.env("PGADMIN_EMAIL"),
+           "password": ps.manager().get_secret("PGADMIN_PASSWORD") or ""}, fp=sys.stdout)

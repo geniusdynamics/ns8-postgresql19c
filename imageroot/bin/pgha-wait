@@ -1,0 +1,18 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# ExecStartPost of patroni.service: return when the Patroni REST API
+# answers. A replica that is still copying the primary counts as started:
+# the copy can take long, and Patroni reports it.
+#
+
+import sys
+import pgha
+
+if not pgha.wait_patroni(timeout=180, want_running=False):
+    print(pgha._agent().SD_WARNING + "Patroni did not answer within 180 seconds", file=sys.stderr)

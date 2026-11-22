@@ -1,0 +1,15 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Register the OpenBao database secrets engine",
+    "$id": "http://nethserver.org/json-schema/task/input/postgresql19c/register-openbao-database-engine",
+    "description": "Administrators. Create the PostgreSQL role ns8_openbao (LOGIN CREATEROLE, not superuser) and configure the connection of the OpenBao database secrets engine to the client endpoint of this cluster, so that applications that support OpenBao request short-lived credentials. OpenBao must be on; the token needs access to sys/mounts and the database mount",
+    "examples": [{}, {"mount": "database", "allowed_roles": ["app-readonly"]}],
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+        "mount": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+        "connection": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$"},
+        "allowed_roles": {"type": "array", "items": {"type": "string", "pattern": "^[A-Za-z0-9_.*-]{1,64}$"}},
+        "rotate_root": {"type": "boolean"}
+    }
+}

@@ -1,0 +1,43 @@
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Client endpoint (HAProxy): the read-write port always reaches the
+# current primary, the read-only port any member in sync, as told by the
+# Patroni REST health checks. It listens on loopback and on the node
+# cluster VPN address. The member list is rendered by pgha-prepare and
+# reloaded without dropping connections when the cluster changes.
+#
+[Unit]
+Description=PostgreSQL client endpoint
+
+[Service]
+Environment=PODMAN_SYSTEMD_UNIT=%n
+EnvironmentFile=%S/state/environment
+WorkingDirectory=%S/state
+Restart=always
+TimeoutStopSec=30
+ExecStartPre=/bin/rm -f %t/%N.pid %t/%N.ctr-id
+ExecStartPre=runagent pgha-prepare pgproxy
+ExecStart=/usr/bin/podman run \
+    --detach \
+    --conmon-pidfile=%t/%N.pid \
+    --cidfile=%t/%N.ctr-id \
+    --cgroups=no-conmon \
+    --replace --name=%N \
+    --network=host \
+    --cap-drop=all \
+    --security-opt=no-new-privileges \
+    --volume=%S/state/pgproxy:/usr/local/etc/haproxy:ro,Z \
+    ${HAPROXY_IMAGE}
+ExecReload=runagent pgha-prepare pgproxy
+ExecReload=/usr/bin/podman kill --signal=USR2 %N
+ExecStop=/usr/bin/podman stop --ignore --cidfile=%t/%N.ctr-id -t 10
+ExecStopPost=/usr/bin/podman rm --ignore -f --cidfile=%t/%N.ctr-id
+PIDFile=%t/%N.pid
+Type=forking
+
+[Install]
+WantedBy=default.target

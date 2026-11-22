@@ -43,9 +43,9 @@
       <cv-column :md="4" :max="4">
         <NsInfoCard
           light
-          :title="$t('status.kickstart_webapp')"
-          :description="this.host ? this.host : $t('status.not_configured')"
-          :icon="Wikis32"
+          :title="endpointTitle"
+          :description="$t('status.client_endpoint')"
+          :icon="DataBase32"
           :loading="loading.getConfiguration"
           :isErrorShown="error.getConfiguration"
           :errorTitle="$t('error.cannot_retrieve_configuration')"
@@ -54,16 +54,7 @@
         >
           <template slot="content">
             <NsButton
-              v-if="this.host"
-              kind="ghost"
-              :icon="Launch20"
-              :disabled="loading.getConfiguration"
-              @click="goToWebapp"
-            >
-              {{ $t("status.open_webapp") }}
-            </NsButton>
-            <NsButton
-              v-else
+              v-if="!config.configured"
               kind="ghost"
               :disabled="loading.getConfiguration"
               :icon="ArrowRight20"
@@ -71,8 +62,30 @@
             >
               {{ $t("status.configure") }}
             </NsButton>
+            <NsButton
+              v-else-if="config.pgadmin_enabled && config.host"
+              kind="ghost"
+              :icon="Launch20"
+              @click="goToPgadmin"
+            >
+              {{ $t("status.open_pgadmin") }}
+            </NsButton>
           </template>
         </NsInfoCard>
+      </cv-column>
+      <cv-column :md="4" :max="4">
+        <NsInfoCard
+          light
+          :title="config.role ? $t('settings.role_' + config.role) : '-'"
+          :description="
+            config.cluster_id
+              ? $t('status.cluster_name', { cluster: config.cluster_id })
+              : $t('status.role')
+          "
+          :icon="Network_232"
+          :loading="loading.getConfiguration"
+          class="min-height-card"
+        />
       </cv-column>
       <cv-column :md="4" :max="4">
         <NsInfoCard
@@ -136,6 +149,250 @@
         />
       </cv-column>
     </cv-row>
+    <!-- cluster health -->
+    <template v-if="config.configured">
+      <cv-row>
+        <cv-column class="page-subtitle">
+          <h4>{{ $t("status.cluster_health") }}</h4>
+        </cv-column>
+      </cv-row>
+      <cv-row v-if="error.getClusterStatus">
+        <cv-column>
+          <NsInlineNotification
+            kind="error"
+            :title="$t('action.get-cluster-status')"
+            :description="error.getClusterStatus"
+            :showCloseButton="false"
+          />
+        </cv-column>
+      </cv-row>
+      <cv-row v-for="warning in cluster.warnings" :key="warning">
+        <cv-column>
+          <NsInlineNotification
+            :kind="criticalWarnings.includes(warning) ? 'error' : 'warning'"
+            :title="$t('status.warning_' + warning)"
+            :description="$t('status.warning_' + warning + '_description')"
+            :showCloseButton="false"
+          />
+        </cv-column>
+      </cv-row>
+      <cv-row>
+        <cv-column :md="4" :max="4">
+          <NsInfoCard
+            light
+            :title="cluster.leader || '-'"
+            :description="$t('status.primary')"
+            :icon="Star32"
+            :loading="loading.getClusterStatus"
+            class="min-height-card"
+          />
+        </cv-column>
+        <cv-column :md="4" :max="4">
+          <NsInfoCard
+            light
+            :title="
+              $t('status.voters_value', {
+                healthy: cluster.healthy_voters || 0,
+                voters: cluster.voters || 0,
+              })
+            "
+            :description="$t('status.quorum')"
+            :icon="cluster.quorum_ok ? CheckmarkFilled32 : ErrorFilled32"
+            :loading="loading.getClusterStatus"
+            class="min-height-card"
+          />
+        </cv-column>
+        <cv-column :md="4" :max="4">
+          <NsInfoCard
+            light
+            :title="String(cluster.failure_tolerance || 0)"
+            :description="$t('status.failure_tolerance')"
+            :icon="Security32"
+            :loading="loading.getClusterStatus"
+            class="min-height-card"
+          />
+        </cv-column>
+        <cv-column :md="4" :max="4">
+          <NsInfoCard
+            light
+            :title="
+              $t('settings.replication_' + (config.replication_mode || 'async'))
+            "
+            :description="$t('status.replication_mode')"
+            :icon="Copy32"
+            :loading="loading.getConfiguration"
+            class="min-height-card"
+          />
+        </cv-column>
+      </cv-row>
+      <cv-row>
+        <cv-column>
+          <cv-tile light>
+            <h6 class="mg-bottom-sm">{{ $t("status.postgres_members") }}</h6>
+            <cv-skeleton-text
+              v-if="loading.getClusterStatus"
+              :paragraph="true"
+              :line-count="3"
+            ></cv-skeleton-text>
+            <NsEmptyState
+              v-else-if="!cluster.members.length"
+              :title="$t('status.no_members')"
+            />
+            <cv-structured-list v-else>
+              <template slot="headings">
+                <cv-structured-list-heading>{{
+                  $t("status.member")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.node")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.member_role")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.state")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.lag")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.timeline")
+                }}</cv-structured-list-heading>
+              </template>
+              <template slot="items">
+                <cv-structured-list-item
+                  v-for="m in cluster.members"
+                  :key="m.name"
+                >
+                  <cv-structured-list-data>{{
+                    m.name
+                  }}</cv-structured-list-data>
+                  <cv-structured-list-data>{{
+                    m.node || "-"
+                  }}</cv-structured-list-data>
+                  <cv-structured-list-data>
+                    <NsTag
+                      :kind="m.role === 'leader' ? 'green' : 'blue'"
+                      :label="$t('status.pg_role_' + m.role)"
+                    />
+                  </cv-structured-list-data>
+                  <cv-structured-list-data>{{
+                    m.state
+                  }}</cv-structured-list-data>
+                  <cv-structured-list-data>{{
+                    lagText(m)
+                  }}</cv-structured-list-data>
+                  <cv-structured-list-data>{{
+                    m.timeline
+                  }}</cv-structured-list-data>
+                </cv-structured-list-item>
+              </template>
+            </cv-structured-list>
+          </cv-tile>
+        </cv-column>
+      </cv-row>
+      <cv-row>
+        <cv-column :lg="8">
+          <cv-tile light>
+            <h6 class="mg-bottom-sm">{{ $t("status.etcd_members") }}</h6>
+            <cv-skeleton-text
+              v-if="loading.getClusterStatus"
+              :paragraph="true"
+              :line-count="3"
+            ></cv-skeleton-text>
+            <cv-structured-list v-else-if="cluster.etcd.length">
+              <template slot="headings">
+                <cv-structured-list-heading>{{
+                  $t("status.member")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.vote")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.health")
+                }}</cv-structured-list-heading>
+              </template>
+              <template slot="items">
+                <cv-structured-list-item
+                  v-for="e in cluster.etcd"
+                  :key="e.name + e.peer_url"
+                >
+                  <cv-structured-list-data>{{
+                    e.name || e.peer_url
+                  }}</cv-structured-list-data>
+                  <cv-structured-list-data>{{
+                    e.learner ? $t("status.learner") : $t("status.voter")
+                  }}</cv-structured-list-data>
+                  <cv-structured-list-data>
+                    <NsTag
+                      :kind="e.healthy ? 'green' : 'red'"
+                      :label="
+                        e.healthy
+                          ? $t('status.healthy')
+                          : $t('status.unhealthy')
+                      "
+                    />
+                  </cv-structured-list-data>
+                </cv-structured-list-item>
+              </template>
+            </cv-structured-list>
+            <NsEmptyState v-else :title="$t('status.no_members')" />
+          </cv-tile>
+        </cv-column>
+        <cv-column :lg="8">
+          <cv-tile light>
+            <h6 class="mg-bottom-sm">{{ $t("status.databases") }}</h6>
+            <cv-skeleton-text
+              v-if="loading.listDatabases"
+              :paragraph="true"
+              :line-count="3"
+            ></cv-skeleton-text>
+            <NsEmptyState
+              v-else-if="!databases.length"
+              :title="$t('status.no_databases')"
+            >
+              <template #description>{{
+                $t("status.no_databases_description")
+              }}</template>
+            </NsEmptyState>
+            <cv-structured-list v-else>
+              <template slot="headings">
+                <cv-structured-list-heading>{{
+                  $t("status.database")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.client")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.size")
+                }}</cv-structured-list-heading>
+                <cv-structured-list-heading>{{
+                  $t("status.login")
+                }}</cv-structured-list-heading>
+              </template>
+              <template slot="items">
+                <cv-structured-list-item v-for="db in databases" :key="db.name">
+                  <cv-structured-list-data>{{
+                    db.name
+                  }}</cv-structured-list-data>
+                  <cv-structured-list-data>{{
+                    (db.clients || []).join(", ") || db.client_id || "-"
+                  }}</cv-structured-list-data>
+                  <cv-structured-list-data>{{
+                    db.size_bytes | byteFormat
+                  }}</cv-structured-list-data>
+                  <cv-structured-list-data>{{
+                    db.owner_can_login
+                      ? $t("common.enabled")
+                      : $t("common.disabled")
+                  }}</cv-structured-list-data>
+                </cv-structured-list-item>
+              </template>
+            </cv-structured-list>
+          </cv-tile>
+        </cv-column>
+      </cv-row>
+    </template>
     <!-- services -->
     <cv-row>
       <cv-column class="page-subtitle">
@@ -295,10 +552,19 @@ import {
   UtilService,
   PageTitleService,
 } from "@nethserver/ns8-ui-lib";
+import ModuleTask from "@/mixins/moduleTask";
+import DataBase32 from "@carbon/icons-vue/es/data--base/32";
+import Network_232 from "@carbon/icons-vue/es/network--2/32";
+import Star32 from "@carbon/icons-vue/es/star/32";
+import Security32 from "@carbon/icons-vue/es/security/32";
+import Copy32 from "@carbon/icons-vue/es/copy/32";
+import CheckmarkFilled32 from "@carbon/icons-vue/es/checkmark--filled/32";
+import ErrorFilled32 from "@carbon/icons-vue/es/error--filled/32";
 
 export default {
   name: "Status",
   mixins: [
+    ModuleTask,
     TaskService,
     QueryParamService,
     IconService,
@@ -317,6 +583,18 @@ export default {
       isRedirectChecked: false,
       redirectTimeout: 0,
       host: "",
+      DataBase32,
+      Network_232,
+      Star32,
+      Security32,
+      Copy32,
+      CheckmarkFilled32,
+      ErrorFilled32,
+      criticalWarnings: ["quorum_lost", "no_leader", "etcd_unreachable"],
+      config: { configured: false, role: "", endpoint: {} },
+      cluster: { members: [], etcd: [], warnings: [] },
+      databases: [],
+      refreshInterval: null,
       status: {
         instance: "",
         services: [],
@@ -330,8 +608,12 @@ export default {
         listBackupRepositories: false,
         listBackups: false,
         getConfiguration: false,
+        getClusterStatus: false,
+        listDatabases: false,
       },
       error: {
+        getConfiguration: "",
+        getClusterStatus: "",
         getStatus: "",
         listBackupRepositories: "",
         listBackups: "",
@@ -340,6 +622,10 @@ export default {
   },
   computed: {
     ...mapState(["instanceName", "instanceLabel", "core", "appName"]),
+    endpointTitle() {
+      const e = this.config.endpoint || {};
+      return e.host && e.port ? `${e.host}:${e.port}` : "-";
+    },
     installationNodeTitle() {
       if (this.status && this.status.node) {
         if (this.status.node_ui_name) {
@@ -378,14 +664,55 @@ export default {
   beforeUnmount() {
     clearTimeout(this.redirectTimeout);
   },
+  beforeDestroy() {
+    clearInterval(this.refreshInterval);
+  },
   created() {
     this.getConfiguration();
     this.getStatus();
     this.listBackupRepositories();
   },
   methods: {
-    goToWebapp() {
-      window.open(`https://${this.host}`, "_blank");
+    lagText(m) {
+      if (m.role === "leader") {
+        return "-";
+      }
+      if (m.lag_bytes < 0) {
+        return this.$t("status.unknown");
+      }
+      return this.$options.filters.byteFormat(m.lag_bytes);
+    },
+    goToPgadmin() {
+      window.open(`https://${this.config.host}`, "_blank");
+    },
+    async getClusterStatus() {
+      this.error.getClusterStatus = "";
+      try {
+        const out = await this.runModuleTask("get-cluster-status");
+        this.cluster = {
+          members: [],
+          etcd: [],
+          warnings: [],
+          ...out,
+        };
+      } catch (failure) {
+        this.error.getClusterStatus = this.taskErrorMessage(failure);
+      }
+      this.loading.getClusterStatus = false;
+    },
+    async listDatabases() {
+      try {
+        const out = await this.runModuleTask("list-databases");
+        this.databases = out.databases || [];
+      } catch (failure) {
+        this.databases = [];
+      }
+      this.loading.listDatabases = false;
+    },
+    refreshCluster() {
+      if (this.config.configured) {
+        this.getClusterStatus();
+      }
     },
     async getConfiguration() {
       this.loading.getConfiguration = true;
@@ -431,8 +758,17 @@ export default {
     },
     getConfigurationCompleted(taskContext, taskResult) {
       const config = taskResult.output;
+      this.config = config;
       this.host = config.host;
       this.loading.getConfiguration = false;
+      if (config.configured) {
+        this.loading.getClusterStatus = true;
+        this.loading.listDatabases = true;
+        this.getClusterStatus();
+        this.listDatabases();
+        clearInterval(this.refreshInterval);
+        this.refreshInterval = setInterval(this.refreshCluster, 15000);
+      }
     },
     async getStatus() {
       this.loading.getStatus = true;
@@ -595,6 +931,10 @@ export default {
 
 <style scoped lang="scss">
 @import "../styles/carbon-utils";
+
+.mg-bottom-sm {
+  margin-bottom: $spacing-05;
+}
 
 .break-word {
   word-wrap: break-word;

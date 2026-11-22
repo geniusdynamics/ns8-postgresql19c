@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Publish the service records and tell the other members: they add this
+# member to their client endpoint (or drop it, when it left). With
+# OpenBao, copy the shared secrets there.
+#
+
+import json
+import os
+import sys
+
+import agent
+import pgha
+import pgha_secrets as ps
+
+pgha.reload_env()
+wrdb = agent.redis_connect(privileged=True)
+pgha.publish_records(wrdb)
+
+if os.path.exists(pgha.state_path(".left-cluster")):
+    with open(pgha.state_path(".left-cluster")) as fp:
+        old = json.load(fp)
+    os.unlink(pgha.state_path(".left-cluster"))
+    pgha.fire_cluster_changed(f"{pgha.env('MODULE_ID')}-left", rdb=wrdb, cid=old["cluster_id"])
+
+if os.path.exists(pgha.state_path(".joined")):
+    os.unlink(pgha.state_path(".joined"))
+    pgha.fire_cluster_changed(f"{pgha.env('MODULE_ID')}-joined", rdb=wrdb)
+elif pgha.is_cluster():
+    pgha.fire_cluster_changed(f"{pgha.env('MODULE_ID')}-configured", rdb=wrdb)
+
+# Local endpoint member list
+if pgha.render_component("pgproxy"):
+    pgha.systemctl("reload", pgha.UNITS["pgproxy"], check=False)
+
+if ps.vault_settings()["vault_enabled"]:
+    try:
+        pushed, conflicts = ps.manager().push_shared()
+        if pushed:
+            print("Shared secrets copied to OpenBao: " + ", ".join(pushed), file=sys.stderr)
+        if conflicts:
+            pgha.add_warning({"id": "openbao_secret_conflict", "items": conflicts})
+    except ps.SecretError as ex:
+        print(agent.SD_WARNING + f"OpenBao not updated now, the periodic check retries: {ex}", file=sys.stderr)
+        pgha.add_warning({"id": "openbao_sync_pending", "items": []})

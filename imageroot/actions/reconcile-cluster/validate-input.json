@@ -1,0 +1,10 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Reconcile the cluster membership",
+    "$id": "http://nethserver.org/json-schema/task/input/postgresql19c/reconcile-cluster",
+    "description": "Run the membership check of this instance now (role pgpeer, or administrators)",
+    "examples": [{}, {"reason": "postgresql19c2-joined"}],
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {"reason": {"type": "string", "maxLength": 128}}
+}

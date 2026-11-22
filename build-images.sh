@@ -2,6 +2,7 @@
 
 #
 # Copyright (C) 2023 Nethesis S.r.l.
+# Copyright (C) 2026 Genius Dynamics
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 
@@ -11,46 +12,66 @@ set -e
 # Prepare variables for later use
 images=()
 # The image will be pushed to GitHub container registry
-repobase="${REPOBASE:-ghcr.io/nethserver}"
+repobase="${REPOBASE:-ghcr.io/geniusdynamics}"
 # Configure the image name
-reponame="kickstart"
+reponame="postgresql19c"
 # Node.js 25+ no longer ships Corepack, install it from npm
 # renovate: datasource=npm packageName=corepack
 corepack_version=0.36.0
+# Client endpoint (HAProxy LTS) and optional pgAdmin, pulled at install
+# renovate: datasource=docker depName=docker.io/library/haproxy
+haproxy_image="docker.io/library/haproxy:3.2.27-alpine"
+# renovate: datasource=docker depName=docker.io/dpage/pgadmin4
+pgadmin_image="docker.io/dpage/pgadmin4:9.19.0"
+
+# Runtime image: PostgreSQL 19 + Patroni + etcd (server/Containerfile pins
+# every version). Published next to the module image with the same tag.
+echo "Building the PostgreSQL runtime image..."
+buildah build --layers --force-rm \
+    --file server/Containerfile \
+    --tag "${repobase}/${reponame}-server" \
+    server
+images+=("${repobase}/${reponame}-server")
 
 # Create a new empty container image
 container=$(buildah from scratch)
 
-# Reuse existing nodebuilder-kickstart container, to speed up builds
-if ! buildah containers --format "{{.ContainerName}}" | grep -q nodebuilder-kickstart; then
+# Reuse existing nodebuilder-postgresql19c container, to speed up builds
+if ! buildah containers --format "{{.ContainerName}}" | grep -q nodebuilder-postgresql19c; then
     echo "Pulling NodeJS runtime..."
-    buildah from --name nodebuilder-kickstart -v "${PWD}:/usr/src:Z" docker.io/library/node:26.13.0-slim
-    buildah run nodebuilder-kickstart sh -c "npm install -g corepack@${corepack_version} && corepack enable"
+    buildah from --name nodebuilder-postgresql19c -v "${PWD}:/usr/src:Z" docker.io/library/node:26.13.0-slim
+    buildah run nodebuilder-postgresql19c sh -c "npm install -g corepack@${corepack_version} && corepack enable"
 fi
 
 echo "Build static UI files with node..."
 buildah run \
     --workingdir=/usr/src/ui \
     --env="NODE_OPTIONS=--openssl-legacy-provider" \
-    nodebuilder-kickstart \
+    nodebuilder-postgresql19c \
     sh -c "yarn install && yarn build"
 
 # Add imageroot directory to the container image
 buildah add "${container}" imageroot /imageroot
 buildah add "${container}" ui/dist /ui
-# Setup the entrypoint, ask to reserve one TCP port with the label and set a rootless container
-# Select you image(s) with the label org.nethserver.images
-# ghcr.io/xxxxx is the GitHub container registry or your own registry or docker.io for Docker Hub
-# The image tag is set to latest by default, but can be overridden with the IMAGETAG environment variable
-# --label="org.nethserver.images=docker.io/mariadb:13.0.2 docker.io/roundcube/roundcubemail:1.6.19-apache"
-# rootfull=0 === rootless container
-# tcp-ports-demand=1 number of tcp Port to reserve , 1 is the minimum, can be udp or tcp
+# - routeadm on the node Traefik: the optional pgAdmin route
+# - postgresql19c@any:pgpeer: the other instances of this module may run
+#   the guarded peer actions (admit-member, also gated by set-peer-access,
+#   and reconcile-cluster). Consumers request postgresql19c@any:pgclient.
+# - node:fwadm: the optional direct access from outside the cluster opens
+#   the public endpoint port in the node firewall (to everyone, or to an
+#   allowlist with rich rules). Nothing is opened by default.
+# - eight TCP ports: PostgreSQL, Patroni REST, etcd client, etcd peer,
+#   client endpoint (read-write), client endpoint (read-only), pgAdmin,
+#   public endpoint (TLS only). The others listen on loopback and/or the
+#   node cluster VPN address, which is in the trusted firewall zone.
+# - rootless module; core 3.20.1+ as the module template
 buildah config --entrypoint=/ \
-    --label="org.nethserver.authorizations=traefik@node:routeadm" \
-    --label="org.nethserver.tcp-ports-demand=1" \
+    --label="org.nethserver.authorizations=traefik@node:routeadm node:fwadm postgresql19c@any:pgpeer" \
+    --label="org.nethserver.tcp-ports-demand=8" \
     --label="org.nethserver.rootfull=0" \
     --label="org.nethserver.min-core=3.20.1" \
-    --label="org.nethserver.images=docker.io/postgres:17.11-alpine docker.io/nginx:1.31.7-alpine" \
+    --label="org.nethserver.volumes=pgdata" \
+    --label="org.nethserver.images=${repobase}/${reponame}-server:${IMAGETAG:-latest} ${haproxy_image} ${pgadmin_image}" \
     "${container}"
 # Commit the image
 buildah commit "${container}" "${repobase}/${reponame}"
@@ -59,17 +80,7 @@ buildah commit "${container}" "${repobase}/${reponame}"
 images+=("${repobase}/${reponame}")
 
 #
-# NOTICE:
-#
-# It is possible to build and publish multiple images.
-#
-# 1. create another buildah container
-# 2. add things to it and commit it
-# 3. append the image url to the images array
-#
-
-#
-# Setup CI when pushing to Github. 
+# Setup CI when pushing to Github.
 # Warning! docker::// protocol expects lowercase letters (,,)
 if [[ -n "${CI}" ]]; then
     # Set output value for Github Actions

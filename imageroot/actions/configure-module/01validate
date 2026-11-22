@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Allowed role changes:
+#   (none) or standalone -> any role (standalone <-> initial keeps the data)
+#   join or witness -> the same role and cluster: settings only
+#   initial alone -> standalone: keeps the data
+#   any cluster role -> standalone: the instance leaves its cluster and
+#                       restarts empty (the data stays in the cluster)
+#   between cluster roles or clusters: become standalone first
+#
+
+import json
+import os
+import sys
+
+import agent
+import pgha
+import pgha_secrets
+
+agent.set_weight(os.path.basename(__file__), 0)
+
+data = json.load(sys.stdin)
+new_role = data["role"]
+current = pgha.role()
+cid = (data.get("cluster_id") or "").strip()
+
+if new_role in pgha.CLUSTER_ROLES and not pgha.vpn_ip():
+    pgha.validation_error("role", new_role, "no_vpn_address")
+
+if new_role in ("join", "witness"):
+    if not cid:
+        pgha.validation_error("cluster_id", cid, "required")
+    if current in ("join", "witness"):
+        if current != new_role or cid != pgha.cluster_id():
+            pgha.validation_error("role", new_role, "leave_cluster_first")
+    elif current == "initial":
+        pgha.validation_error("role", new_role, "leave_cluster_first")
+    else:
+        candidates = {c["cluster_id"]: c for c in pgha.cluster_candidates()}
+        if cid not in candidates:
+            pgha.validation_error("cluster_id", cid, "cluster_not_found")
+        records = pgha.members(wanted=cid)
+        allow = any(m["allow_same_node"] for m in records)
+        if not allow and any(m["node"] == pgha.env("NODE_ID") for m in records):
+            pgha.validation_error("cluster_id", cid, "node_already_member")
+        # A standalone server with databases cannot join: its data would be
+        # replaced by a copy of the cluster
+        if current == "standalone" and pgha.unit_active(pgha.UNITS["patroni"]):
+            try:
+                dbs = json.loads(pgha.psql(pgha.LIST_DATABASES_SQL, timeout=60).strip() or "null") or []
+            except Exception:
+                pgha.validation_error("role", new_role, "cannot_check_databases")
+            if dbs:
+                pgha.validation_error("role", new_role, "instance_not_empty")
+elif new_role == "initial" and current in ("join", "witness"):
+    pgha.validation_error("role", new_role, "leave_cluster_first")
+
+if data.get("pgadmin_enabled") and not (data.get("host") or "").strip() and not data.get("pgadmin_path"):
+    pgha.validation_error("host", "", "required")
+
+for field in ("public_access_allowlist", "pgadmin_ip_allowlist"):
+    for item in data.get(field) or []:
+        try:
+            net = pgha.normalize_network(item)
+        except ValueError:
+            pgha.validation_error(field, item, "invalid_network")
+        if field == "public_access_allowlist" and ":" in net:
+            # The public endpoint listens on IPv4
+            pgha.validation_error(field, item, "ipv6_not_supported")
+
+if data.get("vault_enabled"):
+    settings = pgha_secrets.vault_settings()
+    if not (data.get("vault_address") or settings["vault_address"]):
+        pgha.validation_error("vault_address", "", "required")
+    if not (data.get("vault_token") or settings["vault_token_set"]):
+        pgha.validation_error("vault_token", "", "required")
