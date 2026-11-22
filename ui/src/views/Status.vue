@@ -376,7 +376,7 @@
                     db.name
                   }}</cv-structured-list-data>
                   <cv-structured-list-data>{{
-                    db.client_id || "-"
+                    (db.clients || []).join(", ") || db.client_id || "-"
                   }}</cv-structured-list-data>
                   <cv-structured-list-data>{{
                     db.size_bytes | byteFormat

@@ -243,7 +243,7 @@ class ClusterTest:
 
         step("Grant a client database with a SCRAM verifier")
         pw = pgha.new_password()
-        proc = n1.sql(pgha.grant_sql("warpgate1", "warpgate1", pgha.scram_sha256_verifier(pw)))
+        proc = n1.sql(pgha.grant_sql("warpgate1", "warpgate1", pgha.scram_sha256_verifier(pw), "warpgate"))
         assert proc.returncode == 0, proc.stderr
         proc = n1.sql("CREATE TABLE x (a int); INSERT INTO x VALUES (1); SELECT count(*) FROM x;",
                       user="warpgate1", password=pw, db="warpgate1")
@@ -251,11 +251,36 @@ class ClusterTest:
         assert n1.sql("SELECT 1;", user="warpgate1", password="wrong", db="warpgate1").returncode != 0
         assert n1.sql("SELECT 1;", user="warpgate1", password=pw, db="postgres").returncode != 0, \
             "the client must not connect to other databases"
-        proc = n1.sql(pgha.grant_sql("warpgate1", "warpgate1", pgha.scram_sha256_verifier(pw)))
+        proc = n1.sql(pgha.grant_sql("warpgate1", "warpgate1", pgha.scram_sha256_verifier(pw), "warpgate"))
         assert proc.returncode == 0, "grant must be idempotent: " + proc.stderr
+        info = json.loads(n1.sql(pgha.ownership_sql("warpgate1", "warpgate2")).stdout)
+        assert pgha.may_use_database(info, "warpgate2", "warpgate") == "", info
+        assert pgha.may_use_database(info, "kumomta1", "kumomta") == "database_owned_by_other", info
+
+        step("A second instance of the same application shares the database")
+        pw2 = pgha.new_password()
+        proc = n1.sql(pgha.grant_sql("warpgate1", "warpgate2", pgha.scram_sha256_verifier(pw2), "warpgate"))
+        assert proc.returncode == 0, proc.stderr
+        proc = n1.sql("INSERT INTO x VALUES (2); CREATE TABLE y (b int); SELECT count(*) FROM x;",
+                      user="warpgate2", password=pw2, db="warpgate1")
+        assert proc.stdout.strip() == "2", proc.stderr
+        proc = n1.sql("INSERT INTO y VALUES (5); SELECT tableowner FROM pg_tables WHERE tablename = 'y';",
+                      user="warpgate1", password=pw, db="warpgate1")
+        assert proc.stdout.strip() == "warpgate1_owner", proc.stdout + proc.stderr
         out = n1.sql(pgha.LIST_DATABASES_SQL).stdout.strip()
         dbs = json.loads(out)
         assert dbs[0]["name"] == "warpgate1" and dbs[0]["client_id"] == "warpgate1", dbs
+        assert dbs[0]["clients"] == ["warpgate1", "warpgate2"] and dbs[0]["app"] == "warpgate", dbs
+        proc = n1.sql(pgha.revoke_sql("warpgate1", "warpgate2"))
+        assert proc.returncode == 0, proc.stderr
+        assert n1.sql("SELECT 1;", user="warpgate2", password=pw2, db="warpgate1").returncode != 0
+        assert n1.sql("SELECT count(*) FROM y;", user="warpgate1", password=pw, db="warpgate1").stdout.strip() == "1"
+        # Drop of a scratch database and its roles
+        assert n1.sql(pgha.grant_sql("scratch", "app9", pgha.scram_sha256_verifier(pw), "")).returncode == 0
+        proc = n1.sql(pgha.revoke_sql("scratch", "app9", drop=True))
+        assert proc.returncode == 0, proc.stderr
+        left = n1.sql("SELECT count(*) FROM pg_roles WHERE rolname IN ('app9', 'scratch_owner');").stdout.strip()
+        assert left == "0", left
 
         step("Join two members as etcd learners, then Patroni replicas")
         for node in (n2, n3):
@@ -310,7 +335,7 @@ class ClusterTest:
         leader = self.node(self.leader(n2))
         proc = sh("docker", "exec", leader.c["patroni"], "gosu", "postgres", "pg_dumpall", "--clean", "--if-exists")
         filtered = "".join(pgha.filter_dump(proc.stdout.splitlines(keepends=True)))
-        assert "CREATE ROLE warpgate1" in filtered
+        assert "CREATE ROLE warpgate1;" in filtered and "CREATE ROLE warpgate1_owner;" in filtered
         for r in pgha.SYSTEM_ROLES:
             assert f"CREATE ROLE {r};" not in filtered, r
         print(f"dump: {len(filtered)} bytes")

@@ -2,7 +2,7 @@
     "$schema": "http://json-schema.org/draft-07/schema#",
     "title": "Revoke a database",
     "$id": "http://nethserver.org/json-schema/task/input/postgresql19c/revoke-database",
-    "description": "Role pgclient. Disable the login of the owner role of a client database (default), or drop the database and the role (drop: true). A module caller acts on its own databases only",
+    "description": "Role pgclient. Disable the login role of the caller for a database (default), or drop the database with its roles (drop: true, the creator of the database or an administrator). A module caller acts for itself only",
     "examples": [{}, {"database": "warpgate1", "drop": true}],
     "type": "object",
     "additionalProperties": false,

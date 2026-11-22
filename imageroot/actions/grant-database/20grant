@@ -30,32 +30,33 @@ database = (data.get("database") or "").strip() or pgha.database_name_for(client
 if not pgha.valid_database_name(database):
     pgha.validation_error("database", database, "invalid")
 
-owner = pgha.psql(
-    f"SELECT COALESCE(shobj_description(oid, 'pg_authid'), '') FROM pg_roles WHERE rolname = {pgha.quote_literal(database)};"
-).strip()
-if owner and owner != f"ns8-client={client_id}":
-    pgha.validation_error("database", database, "database_owned_by_other")
-dbowner = pgha.psql(
-    f"SELECT COALESCE(shobj_description(oid, 'pg_database'), '') FROM pg_database WHERE datname = {pgha.quote_literal(database)};"
-).strip()
-if dbowner and dbowner != f"ns8-client={client_id}":
-    pgha.validation_error("database", database, "database_owned_by_other")
+# Application of the caller (its image name): modules of the same
+# application may share a database, each with its own login role
+rdb = agent.redis_connect(use_replica=True)
+caller = pgha.caller_module()
+app = ""
+if caller:
+    image_url = rdb.hget(f"module/{caller}/environment", "IMAGE_URL") or ""
+    app = image_url.rsplit("/", 1)[-1].split(":", 1)[0].split("@", 1)[0]
+info = json.loads(pgha.psql(pgha.ownership_sql(database, client_id)).strip() or "{}")
+refusal = pgha.may_use_database(info, client_id, app, admin_share=not caller and bool(data.get("share")))
+if refusal:
+    pgha.validation_error("database", database, refusal)
 
+username = pgha.login_role_name(client_id)
 password = pgha.new_password()
-pgha.psql(pgha.grant_sql(database, client_id, pgha.scram_sha256_verifier(password)), tuples=False)
+pgha.psql(pgha.grant_sql(database, client_id, pgha.scram_sha256_verifier(password), app), tuples=False)
 print(f"Database {database} granted to {client_id}", file=sys.stderr)
 
-rdb = agent.redis_connect(use_replica=True)
 endpoints = pgha.client_endpoints(rdb)
 caller_node = ""
-caller = pgha.caller_module()
 if caller:
     caller_node = rdb.hget(f"module/{caller}/environment", "NODE_ID") or ""
 best = pgha.pick_endpoint(endpoints, caller_node)
 output = {
     "client_id": client_id,
     "database": database,
-    "username": database,
+    "username": username,
     "password": password,
     "host": best["host"],
     "port": best["port"],
@@ -65,13 +66,13 @@ output = {
     "cluster_id": pgha.cluster_id(),
     "tls": False,
     "sslmode": "disable",
-    "url": f"postgresql://{database}:{password}@{best['host']}:{best['port']}/{database}?sslmode=disable",
+    "url": f"postgresql://{username}:{password}@{best['host']}:{best['port']}/{database}?sslmode=disable",
 }
 if ps.vault_settings()["vault_enabled"]:
     mgr = ps.manager()
-    name = f"client/{database}"
+    name = f"client/{username}"
     try:
-        mgr.set_secret(name, json.dumps({"username": database, "password": password, "database": database,
+        mgr.set_secret(name, json.dumps({"username": username, "password": password, "database": database,
                                          "host": best["host"], "port": best["port"]}), local=False)
         output["openbao_path"] = mgr.vault.secret_path(name)
     except ps.SecretError as ex:

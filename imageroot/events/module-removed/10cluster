@@ -7,8 +7,8 @@
 
 # A module was removed. If it was a member of this cluster (also when its
 # node died and its destroy-module could not run), the primary removes
-# its etcd member and every member drops it from the client endpoint. A
-# removed consumer keeps its database, with login disabled.
+# its etcd member and every member drops it from the client endpoint. The
+# login role of a removed consumer is disabled; its database is kept.
 
 import json
 import sys
@@ -26,12 +26,12 @@ if pgha.is_cluster():
 
 # Consumer: disable the owner role of its default database, on the primary
 if pgha.runs_postgres() and pgha.is_local_primary():
-    database = pgha.database_name_for(removed)
+    login = pgha.login_role_name(removed)
     try:
-        owner = pgha.psql(f"SELECT COALESCE(shobj_description(oid, 'pg_authid'), '') FROM pg_roles "
-                          f"WHERE rolname = {pgha.quote_literal(database)};").strip()
-        if owner == f"ns8-client={removed}":
-            pgha.psql(pgha.revoke_sql(database), tuples=False)
-            print(f"Login of {database} disabled: its module {removed} was removed", file=sys.stderr)
+        comment = pgha.psql(f"SELECT COALESCE(shobj_description(oid, 'pg_authid'), '') FROM pg_roles "
+                            f"WHERE rolname = {pgha.quote_literal(login)};").strip()
+        if comment == f"ns8-client={removed}":
+            pgha.psql(f"ALTER ROLE {pgha.quote_ident(login)} WITH NOLOGIN PASSWORD NULL;", tuples=False)
+            print(f"Login role {login} disabled: its module {removed} was removed", file=sys.stderr)
     except Exception as ex:
-        print(agent.SD_WARNING + f"Cannot disable the database role of {removed}: {ex}", file=sys.stderr)
+        print(agent.SD_WARNING + f"Cannot disable the login role of {removed}: {ex}", file=sys.stderr)

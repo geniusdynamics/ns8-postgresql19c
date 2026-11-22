@@ -81,7 +81,8 @@
     "warning_etcd_unreachable": "etcd unreachable",
     "warning_etcd_unreachable_description": "The etcd members cannot be read from this instance.",
     "warning_not_configured": "Not configured",
-    "warning_not_configured_description": "Choose a role in Settings."
+    "warning_not_configured_description": "Choose a role in Settings.",
+    "clients": "Modules"
   },
   "settings": {
     "title": "Settings",
@@ -204,7 +205,12 @@
     "peer_not_authorized": "Not authorized",
     "peer_not_approved": "Not approved",
     "invalid": "Invalid value",
-    "database_owned_by_other": "The database belongs to another module"
+    "database_owned_by_other": "The database belongs to another module",
+    "login_role_owned_by_other": "The login role belongs to another module",
+    "login_role_not_managed": "A role with this name exists and is not managed by this module",
+    "database_not_managed": "The database is not managed by this module",
+    "invalid_client_id": "Invalid client",
+    "not_the_database_creator": "Only the module that created the database can drop it"
   },
   "openbao": {
     "title": "OpenBao",

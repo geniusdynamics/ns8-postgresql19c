@@ -709,56 +709,142 @@ def valid_database_name(name):
     return bool(DB_NAME_RE.match(name or "")) and name not in RESERVED_NAMES and not name.startswith("pg_")
 
 
-def grant_sql(database, client_id, verifier):
-    """SQL run on the primary (as superuser) to create or update the owner
-    role and the database of a client. The role and database names are
-    validated identifiers; the comment records the owning client."""
-    role_q = quote_ident(database)
-    comment = quote_literal(f"ns8-client={client_id}")
+def owner_role_name(database):
+    """NOLOGIN role that owns a client database and its objects"""
+    return database[:57] + "_owner"
+
+
+def login_role_name(client_id):
+    """Login role of a client"""
+    return database_name_for(client_id)
+
+
+def parse_comment(text):
+    """{"ns8-client": ..., "ns8-app": ...} from a role or database comment"""
+    values = {}
+    for part in (text or "").split(";"):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            values[k.strip()] = v.strip()
+    return values
+
+
+def grant_sql(database, client_id, verifier, app=""):
+    """SQL run on the primary (as superuser) to create or update the
+    database of a client and its login role.
+
+    - "<database>_owner" (NOLOGIN) owns the database, its public schema
+      and, through "SET role", every object the clients create;
+    - each client has its own login role (named after the client) that is
+      a member of the owner role: several modules of the same application
+      (e.g. Warpgate instances on several nodes) share a database with
+      their own credentials.
+
+    Names are validated identifiers; comments record the creating client
+    and the application (image name) allowed to share the database."""
+    db_q = quote_ident(database)
+    owner = owner_role_name(database)
+    owner_q = quote_ident(owner)
+    login = login_role_name(client_id)
+    login_q = quote_ident(login)
+    db_comment = quote_literal(f"ns8-client={client_id};ns8-app={app}")
+    role_attrs = "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION"
     return "\n".join([
         "\\set ON_ERROR_STOP on",
         # Clients connect to their own database only
         "REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;",
         "REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;",
         f"GRANT CONNECT ON DATABASE postgres TO {REWIND_USER};",
-        f"SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {quote_literal(database)}) AS role_exists \\gset",
-        "\\if :role_exists",
-        f"ALTER ROLE {role_q} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD {quote_literal(verifier)};",
+        f"SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {quote_literal(owner)}) AS owner_exists \\gset",
+        "\\if :owner_exists",
         "\\else",
-        f"CREATE ROLE {role_q} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD {quote_literal(verifier)};",
+        f"CREATE ROLE {owner_q} WITH NOLOGIN {role_attrs};",
         "\\endif",
-        f"COMMENT ON ROLE {role_q} IS {comment};",
+        f"SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {quote_literal(login)}) AS login_exists \\gset",
+        "\\if :login_exists",
+        f"ALTER ROLE {login_q} WITH LOGIN {role_attrs} PASSWORD {quote_literal(verifier)};",
+        "\\else",
+        f"CREATE ROLE {login_q} WITH LOGIN {role_attrs} PASSWORD {quote_literal(verifier)};",
+        "\\endif",
+        f"COMMENT ON ROLE {login_q} IS {quote_literal(f'ns8-client={client_id}')};",
+        f"GRANT {owner_q} TO {login_q};",
         f"SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = {quote_literal(database)}) AS db_exists \\gset",
         "\\if :db_exists",
-        f"ALTER DATABASE {role_q} OWNER TO {role_q};",
         "\\else",
-        f"CREATE DATABASE {role_q} OWNER {role_q} ENCODING 'UTF8' TEMPLATE template0;",
+        f"CREATE DATABASE {db_q} OWNER {owner_q} ENCODING 'UTF8' TEMPLATE template0;",
+        f"COMMENT ON DATABASE {db_q} IS {db_comment};",
         "\\endif",
-        f"COMMENT ON DATABASE {role_q} IS {comment};",
-        f"REVOKE ALL ON DATABASE {role_q} FROM PUBLIC;",
-        f"GRANT ALL ON DATABASE {role_q} TO {role_q};",
-        f"\\c {role_q}",
-        f"ALTER SCHEMA public OWNER TO {role_q};",
+        f"REVOKE ALL ON DATABASE {db_q} FROM PUBLIC;",
+        f"GRANT ALL ON DATABASE {db_q} TO {owner_q};",
+        # Objects created by any client belong to the owner role
+        f"ALTER ROLE {login_q} IN DATABASE {db_q} SET role = {quote_literal(owner)};",
+        f"\\c {db_q}",
+        f"ALTER SCHEMA public OWNER TO {owner_q};",
         "",
     ])
 
 
-def revoke_sql(database, drop=False):
-    role_q = quote_ident(database)
-    if drop:
-        return "\n".join([
-            "\\set ON_ERROR_STOP on",
-            f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = {quote_literal(database)};",
-            f"DROP DATABASE IF EXISTS {role_q} WITH (FORCE);",
-            f"DROP ROLE IF EXISTS {role_q};",
-            "",
-        ])
-    return "\n".join([
+def revoke_sql(database, client_id, drop=False):
+    """Disable the login role of a client; with drop, also drop the
+    database, its owner role and the login roles of every client"""
+    login = login_role_name(client_id)
+    login_q = quote_ident(login)
+    owner = owner_role_name(database)
+    lines = [
         "\\set ON_ERROR_STOP on",
-        f"ALTER ROLE {role_q} WITH NOLOGIN PASSWORD NULL;",
-        f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = {quote_literal(database)};",
-        "",
-    ])
+        f"ALTER ROLE {login_q} WITH NOLOGIN PASSWORD NULL;",
+        f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = {quote_literal(login)};",
+    ]
+    if drop:
+        lines += [
+            f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = {quote_literal(database)};",
+            f"DROP DATABASE IF EXISTS {quote_ident(database)} WITH (FORCE);",
+            # Login roles that were members of the owner role only
+            "SELECT format('DROP ROLE IF EXISTS %I', r.rolname) FROM pg_auth_members m "
+            "JOIN pg_roles r ON r.oid = m.member JOIN pg_roles o ON o.oid = m.roleid "
+            f"WHERE o.rolname = {quote_literal(owner)} "
+            "AND NOT EXISTS (SELECT 1 FROM pg_auth_members m2 WHERE m2.member = r.oid AND m2.roleid <> o.oid) \\gexec",
+            f"DROP ROLE IF EXISTS {quote_ident(owner)};",
+        ]
+    return "\n".join(lines + [""])
+
+
+def ownership_sql(database, client_id):
+    """One JSON row: the database comment and the comment of the login
+    role of a client, to check ownership before a grant or a revoke"""
+    return (
+        "SELECT json_build_object("
+        f"'database', (SELECT COALESCE(shobj_description(oid, 'pg_database'), '') FROM pg_database WHERE datname = {quote_literal(database)}), "
+        f"'login', (SELECT COALESCE(shobj_description(oid, 'pg_authid'), '') FROM pg_roles WHERE rolname = {quote_literal(login_role_name(client_id))}), "
+        f"'owner_role', (SELECT rolname FROM pg_roles WHERE rolname = {quote_literal(owner_role_name(database))}));"
+    )
+
+
+def may_use_database(info, client_id, app, admin_share=False):
+    """Decide from ownership_sql() output whether a client may get
+    (or revoke) the database. Returns "" when allowed, else an error."""
+    login_name = login_role_name(client_id)
+    if not valid_database_name(login_name) or login_name.endswith("_owner"):
+        return "invalid_client_id"
+    if info.get("login") is not None:
+        owner = parse_comment(info.get("login")).get("ns8-client")
+        if owner is None:
+            # A role this module did not create (e.g. a system role)
+            return "login_role_not_managed"
+        if owner != client_id:
+            return "login_role_owned_by_other"
+    if info.get("database") is None:
+        return ""
+    db = parse_comment(info["database"])
+    creator = db.get("ns8-client")
+    if creator is None and info.get("owner_role") is None:
+        # A database not created by this module
+        return "database_not_managed"
+    if creator == client_id or admin_share:
+        return ""
+    if app and db.get("ns8-app") == app:
+        return ""
+    return "database_owned_by_other"
 
 
 LIST_DATABASES_SQL = """
@@ -766,8 +852,12 @@ SELECT json_agg(row_to_json(t) ORDER BY t.name) FROM (
   SELECT d.datname AS name,
          pg_get_userbyid(d.datdba) AS owner,
          pg_database_size(d.datname) AS size_bytes,
-         COALESCE(substring(shobj_description(d.oid, 'pg_database') FROM '^ns8-client=(.*)$'), '') AS client_id,
-         COALESCE((SELECT r.rolcanlogin FROM pg_roles r WHERE r.oid = d.datdba), false) AS owner_can_login
+         COALESCE(substring(shobj_description(d.oid, 'pg_database') FROM 'ns8-client=([^;]*)'), '') AS client_id,
+         COALESCE(substring(shobj_description(d.oid, 'pg_database') FROM 'ns8-app=([^;]*)'), '') AS app,
+         COALESCE((SELECT json_agg(r.rolname ORDER BY r.rolname) FROM pg_auth_members m
+                   JOIN pg_roles r ON r.oid = m.member WHERE m.roleid = d.datdba), '[]'::json) AS clients,
+         COALESCE((SELECT bool_or(r.rolcanlogin) FROM pg_auth_members m
+                   JOIN pg_roles r ON r.oid = m.member WHERE m.roleid = d.datdba), false) AS owner_can_login
   FROM pg_database d
   WHERE NOT d.datistemplate AND d.datname <> 'postgres'
 ) t;

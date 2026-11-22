@@ -181,21 +181,49 @@ class SqlTest(unittest.TestCase):
             self.assertFalse(pgha.valid_database_name(bad), bad)
 
     def test_grant_sql(self):
-        sql = pgha.grant_sql("warpgate1", "warpgate1", "SCRAM-SHA-256$4096:abc$def:ghi")
-        self.assertIn('CREATE ROLE "warpgate1" WITH LOGIN NOSUPERUSER', sql)
+        sql = pgha.grant_sql("warpgate1", "warpgate2", "SCRAM-SHA-256$4096:abc$def:ghi", "warpgate")
+        self.assertIn('CREATE ROLE "warpgate1_owner" WITH NOLOGIN', sql)
+        self.assertIn('CREATE ROLE "warpgate2" WITH LOGIN NOSUPERUSER', sql)
         self.assertIn("PASSWORD 'SCRAM-SHA-256$4096:abc$def:ghi'", sql)
-        self.assertIn("COMMENT ON DATABASE \"warpgate1\" IS 'ns8-client=warpgate1'", sql)
+        self.assertIn('GRANT "warpgate1_owner" TO "warpgate2"', sql)
+        self.assertIn('CREATE DATABASE "warpgate1" OWNER "warpgate1_owner"', sql)
+        self.assertIn("COMMENT ON DATABASE \"warpgate1\" IS 'ns8-client=warpgate2;ns8-app=warpgate'", sql)
         self.assertIn("REVOKE CONNECT ON DATABASE postgres FROM PUBLIC", sql)
         self.assertIn(f"GRANT CONNECT ON DATABASE postgres TO {pgha.REWIND_USER}", sql)
-        self.assertNotIn("SUPERUSER;", sql)
+        # SET role after the database exists
+        self.assertLess(sql.index("CREATE DATABASE"), sql.index("SET role"))
+        self.assertNotIn(" SUPERUSER", sql.replace("NOSUPERUSER", ""))
+
+    def test_ownership(self):
+        free = {"database": None, "login": None, "owner_role": None}
+        self.assertEqual(pgha.may_use_database(free, "warpgate1", "warpgate"), "")
+        created = {"database": "ns8-client=warpgate1;ns8-app=warpgate", "login": None, "owner_role": "warpgate1_owner"}
+        # Another instance of the same application shares the database
+        self.assertEqual(pgha.may_use_database(created, "warpgate2", "warpgate"), "")
+        self.assertEqual(pgha.may_use_database(created, "kumomta1", "kumomta"), "database_owned_by_other")
+        self.assertEqual(pgha.may_use_database(created, "report1", "", admin_share=True), "")
+        stolen = {"database": None, "login": "ns8-client=other1", "owner_role": None}
+        self.assertEqual(pgha.may_use_database(stolen, "warpgate1", "warpgate"), "login_role_owned_by_other")
+        system = {"database": None, "login": "", "owner_role": None}
+        self.assertEqual(pgha.may_use_database(system, "app1", ""), "login_role_not_managed")
+        self.assertEqual(pgha.may_use_database(free, "postgres", ""), "invalid_client_id")
+        foreign = {"database": "", "login": None, "owner_role": None}
+        self.assertEqual(pgha.may_use_database(foreign, "app1", ""), "database_not_managed")
+
+    def test_comments(self):
+        self.assertEqual(pgha.parse_comment("ns8-client=a1;ns8-app=x"), {"ns8-client": "a1", "ns8-app": "x"})
+        self.assertEqual(pgha.parse_comment(None), {})
 
     def test_quote(self):
         self.assertEqual(pgha.quote_literal("a'b"), "'a''b'")
         self.assertEqual(pgha.quote_ident('a"b'), '"a""b"')
 
     def test_revoke(self):
-        self.assertIn("NOLOGIN", pgha.revoke_sql("app"))
-        self.assertIn('DROP DATABASE IF EXISTS "app" WITH (FORCE)', pgha.revoke_sql("app", drop=True))
+        self.assertIn('ALTER ROLE "app1" WITH NOLOGIN', pgha.revoke_sql("app", "app1"))
+        self.assertNotIn("DROP", pgha.revoke_sql("app", "app1"))
+        sql = pgha.revoke_sql("app", "app1", drop=True)
+        self.assertIn('DROP DATABASE IF EXISTS "app" WITH (FORCE)', sql)
+        self.assertIn('DROP ROLE IF EXISTS "app_owner"', sql)
 
     def test_filter_dump(self):
         lines = ["CREATE ROLE postgres;\n", "ALTER ROLE postgres WITH SUPERUSER PASSWORD 'x';\n",
@@ -282,9 +310,15 @@ class FakeRedis:
         return self.hashes.get(key, {}).get(field)
 
 
+class FakeRedisDown:
+    def providers(self, service, transport):
+        raise ConnectionError("down")
+
+
 class DiscoveryTest(unittest.TestCase):
     def setUp(self):
-        self.env = mock.patch.dict(os.environ, {
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = mock.patch.dict(os.environ, {"AGENT_STATE_DIR": self.tmp.name,
             "MODULE_ID": "pg2", "NODE_ID": "2", "PG_ROLE": "join", "PG_CLUSTER_ID": "pg1",
             "TCP_PORTS": "20001,20002,20003,20004,20005,20006,20007", "PG_HOST_OVERRIDE": "10.5.4.2"})
         self.env.start()
@@ -308,11 +342,14 @@ class DiscoveryTest(unittest.TestCase):
 
     def tearDown(self):
         self.env.stop()
+        self.tmp.cleanup()
 
     def test_cluster_members(self):
         ms = pgha.cluster_members(self.rdb)
         self.assertEqual([m["module_id"] for m in ms], ["pg1", "pg2", "pg3"])
         self.assertEqual(pgha.etcd_hosts(ms), ["127.0.0.1:20003", "10.5.4.1:20003", "10.5.4.3:20003"])
+        # Cached for starts without Redis
+        self.assertEqual([m["module_id"] for m in pgha.cluster_members(FakeRedisDown())], ["pg1", "pg2", "pg3"])
 
     def test_candidates(self):
         with mock.patch.dict(os.environ, {"PG_ROLE": "standalone", "PG_CLUSTER_ID": "pg2"}):
