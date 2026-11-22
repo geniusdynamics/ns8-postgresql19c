@@ -134,6 +134,27 @@ class LocalBackend:
         return sorted(names)
 
 
+class StaticTokenAuth:
+    """Auth provider: the token pasted by the administrator (state/openbao.env).
+
+    Auth providers give OpenBaoBackend the token of each request. Another
+    provider (e.g. an AppRole provisioned by ns8-openbao: unwrap the
+    secret_id, AppRole login, renew the token) can be added without
+    changing the backend: it only needs token() and, optionally,
+    invalidate() to get a new token after a 403."""
+
+    method = "token"
+
+    def __init__(self, token):
+        self._token = token or ""
+
+    def token(self):
+        return self._token
+
+    def invalidate(self):
+        pass
+
+
 class OpenBaoBackend:
     """KV version 2 at <address>/v1/<mount>/data/<path>/<scope>/<name>"""
 
@@ -142,7 +163,8 @@ class OpenBaoBackend:
     def __init__(self, address, token, mount="secret", path="postgresql19c", scope="",
                  tls_skip_verify=False, timeout=8):
         self.address = (address or "").rstrip("/")
-        self.token = token or ""
+        # token: a token string, or an auth provider (see StaticTokenAuth)
+        self.auth = token if hasattr(token, "token") else StaticTokenAuth(token)
         self.mount = (mount or "secret").strip("/")
         self.base = "/".join(p for p in ((path or "").strip("/"), scope) if p)
         self.tls_skip_verify = tls_skip_verify
@@ -156,12 +178,13 @@ class OpenBaoBackend:
 
     def api(self, method, path, body=None):
         """Any OpenBao API call under /v1/ (path without the leading /v1/)"""
-        if not self.address or not self.token:
+        token = self.auth.token()
+        if not self.address or not token:
             raise OpenBaoUnavailable("OpenBao address or token not set")
         url = f"{self.address}/v1/{path}"
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method, headers={
-            "X-Vault-Token": self.token, "Content-Type": "application/json"})
+            "X-Vault-Token": token, "Content-Type": "application/json"})
         ctx = None
         if self.address.startswith("https://") and self.tls_skip_verify:
             ctx = ssl.create_default_context()
@@ -174,6 +197,8 @@ class OpenBaoBackend:
             # 503: sealed or standby without a leader
             if ex.code in (502, 503, 504):
                 raise OpenBaoUnavailable(f"OpenBao is not available ({ex.code})") from None
+            if ex.code == 403:
+                self.auth.invalidate()
             raise OpenBaoHTTPError(ex.code, path.split("/", 1)[-1]) from None
         except (urllib.error.URLError, OSError, ValueError) as ex:
             raise OpenBaoUnavailable(f"cannot reach OpenBao: {type(ex).__name__}") from None
@@ -385,11 +410,24 @@ def vault_settings():
     }
 
 
+def auth_provider(env=None, token=None):
+    """The auth provider of the configured method. Only the pasted token
+    exists today (VAULT_AUTH_METHOD=token, the default); a provisioned
+    AppRole is a planned second method."""
+    env = env if env is not None else read_openbao_env()
+    if token is not None:
+        return StaticTokenAuth(token)
+    method = env.get("VAULT_AUTH_METHOD", "token")
+    if method != "token":
+        raise OpenBaoUnavailable(f"unsupported OpenBao auth method {method}")
+    return StaticTokenAuth(env.get("VAULT_TOKEN", ""))
+
+
 def make_vault(settings=None, scope=None, address=None, token=None):
     settings = settings or vault_settings()
     env = read_openbao_env()
     return OpenBaoBackend(address if address is not None else env.get("VAULT_ADDR", ""),
-                          token if token is not None else env.get("VAULT_TOKEN", ""),
+                          auth_provider(env, token),
                           settings["vault_mount"], settings["vault_path"],
                           scope if scope is not None else pgha.cluster_id(),
                           settings.get("vault_tls_skip_verify", False))

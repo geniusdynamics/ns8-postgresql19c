@@ -100,6 +100,14 @@ up: a restored instance comes back with OpenBao off.
 
 ## Tokens and AppRole
 
+Authentication is an auth provider of the OpenBao backend
+(`pgha_secrets.StaticTokenAuth`, selected by `VAULT_AUTH_METHOD` in
+`state/openbao.env`, default `token`). A second method, an AppRole
+provisioned by ns8-openbao (unwrap a single-use wrapped `secret_id`,
+AppRole login, renewable token), plugs in as another provider without
+changing the backend; it is a planned follow-up.
+
+
 The token is pasted by the administrator, as in ns8-kumomta. ns8-openbao
 offers no guarded action to provision a policy and a token (or an AppRole)
 for another module today (its actions: configure-module, configure-plugins,

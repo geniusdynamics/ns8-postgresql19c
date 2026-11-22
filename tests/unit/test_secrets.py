@@ -288,3 +288,33 @@ class DatabaseEngineTest(unittest.TestCase):
         v = self.StubVault(mounted=True)
         ps.register_database_engine(v, "db", "pg1", "h", 1, "pw", ["app"], rotate=False)
         self.assertEqual([p for _, p, _ in v.calls], ["sys/mounts/db", "db/config/pg1"])
+
+
+class AuthProviderTest(Base):
+    def test_custom_provider_is_used(self):
+        class Rotating:
+            method = "test"
+
+            def __init__(self):
+                self.calls = 0
+                self.invalidated = 0
+
+            def token(self):
+                self.calls += 1
+                return TOKEN if self.invalidated else "expired"
+
+            def invalidate(self):
+                self.invalidated += 1
+
+        auth = Rotating()
+        v = ps.OpenBaoBackend(self.bao.address, auth, "secret", "postgresql19c", "pg1")
+        with self.assertRaises(ps.OpenBaoHTTPError):
+            v.get("X")
+        self.assertEqual(auth.invalidated, 1)
+        self.assertIsNone(v.get("X"))
+
+    def test_default_method_is_the_pasted_token(self):
+        ps.write_openbao_env(self.bao.address, TOKEN)
+        self.assertEqual(ps.auth_provider().token(), TOKEN)
+        with self.assertRaises(ps.OpenBaoUnavailable):
+            ps.auth_provider({"VAULT_AUTH_METHOD": "approle"})
