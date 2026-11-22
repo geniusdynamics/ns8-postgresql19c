@@ -1,0 +1,46 @@
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# Runtime image of ns8-postgresql19c: the official PostgreSQL 19 image
+# plus Patroni (failover manager) and etcd (its consensus store). The same
+# image runs three containers of a module instance: etcd, Patroni (which
+# starts PostgreSQL) and the one-shot maintenance commands (pg_dumpall,
+# restore). Every version is pinned and tracked by Renovate.
+#
+
+# Download stage: etcd release binaries, checked against the SHA256SUMS
+# file of the same release
+FROM docker.io/library/postgres:19.0-trixie AS etcd
+# renovate: datasource=github-releases depName=etcd-io/etcd
+ARG ETCD_VERSION=v3.6.17
+ARG TARGETARCH=amd64
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    mkdir /etcd; cd /etcd; \
+    tarball="etcd-${ETCD_VERSION}-linux-${TARGETARCH}.tar.gz"; \
+    curl -fsSLO "https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/${tarball}"; \
+    curl -fsSL -o SHA256SUMS "https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/SHA256SUMS"; \
+    grep " ${tarball}\$" SHA256SUMS | sha256sum -c -; \
+    tar -xzf "${tarball}" --strip-components=1; \
+    ./etcd --version
+
+FROM docker.io/library/postgres:19.0-trixie
+# renovate: datasource=pypi depName=patroni
+ARG PATRONI_VERSION=4.1.5
+LABEL org.opencontainers.image.source="https://github.com/geniusdynamics/ns8-postgresql19c" \
+      org.opencontainers.image.description="PostgreSQL 19 with Patroni and etcd for ns8-postgresql19c"
+COPY --from=etcd /etcd/etcd /etcd/etcdctl /etcd/etcdutl /usr/local/bin/
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends python3 python3-venv; \
+    python3 -m venv /opt/patroni; \
+    /opt/patroni/bin/pip install --no-cache-dir "patroni[etcd3,psycopg3]==${PATRONI_VERSION}" "psycopg[binary]"; \
+    ln -s /opt/patroni/bin/patroni /opt/patroni/bin/patronictl /usr/local/bin/; \
+    rm -rf /var/lib/apt/lists/* /root/.cache; \
+    patroni --version; etcd --version
+COPY ns8-patroni-start ns8-etcd-start /usr/local/bin/
+ENV PATRONICTL_CONFIG_FILE=/run/patroni/patroni.yml
