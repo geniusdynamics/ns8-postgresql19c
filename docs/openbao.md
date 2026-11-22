@@ -114,17 +114,32 @@ path "secret/metadata/postgresql19c/*" { capabilities = ["read", "list", "delete
 
 and a periodic token for it: `bao token create -policy=postgresql19c -period=768h`.
 
-## Follow-up: database secrets engine
+## Database secrets engine
 
-Not implemented. Plan: an administrator action
-`register-openbao-database-engine` creates a dedicated PostgreSQL role
-(`LOGIN CREATEROLE`, not superuser, SCRAM password generated and sent only
-to OpenBao), then configures
-`<db mount>/config/<cluster_id>` with `plugin_name:
-postgresql-database-plugin`, `connection_url:
-postgresql://{{username}}:{{password}}@<VPN host>:<endpoint port>/postgres?sslmode=disable`
-(the endpoint follows the primary), `allowed_roles`, and rotates its root
-credential so the module no longer knows it. Applications that support
-OpenBao then request short-lived credentials. Warpgate cannot renew leases
-(it reads `database_url` at startup) and keeps the static credentials of
-`grant-database`.
+`register-openbao-database-engine` (administrators, OpenBao on) lets
+applications that support OpenBao request short-lived PostgreSQL
+credentials:
+
+```bash
+api-cli run module/postgresql19c1/register-openbao-database-engine --data '{"mount": "database", "allowed_roles": ["*"]}'
+```
+
+1. It creates (or updates) the PostgreSQL role `ns8_openbao`: `LOGIN
+   CREATEROLE`, not superuser, with a new SCRAM password sent to OpenBao
+   only.
+2. It enables the `database` secrets engine at `mount` if needed and
+   configures `<mount>/config/<cluster_id>` with the
+   `postgresql-database-plugin`, `password_authentication: scram-sha-256`
+   and `connection_url:
+   postgresql://{{username}}:{{password}}@<VPN address>:<endpoint port>/postgres?sslmode=disable`:
+   the client endpoint, so OpenBao always reaches the primary.
+3. It rotates the root credential (`rotate_root`, default `true`): only
+   OpenBao knows the password afterwards.
+
+The token needs access to `sys/mounts/<mount>` and `<mount>/*`. Roles
+(`<mount>/roles/<name>` with `creation_statements`) are defined in OpenBao
+by the administrator. Tested with unit tests against a stub; not exercised
+against a real OpenBao by the CI.
+
+Warpgate reads `database_url` at startup and cannot renew leases: it keeps
+the static per-consumer credentials of `grant-database`.

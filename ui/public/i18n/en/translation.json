@@ -170,7 +170,8 @@
     "reveal-pgadmin-password": "Show pgAdmin password",
     "list-openbao-servers": "List OpenBao servers",
     "list-openbao-only-secrets": "List OpenBao-only secrets",
-    "copy-openbao-to-local": "Copy secrets from OpenBao"
+    "copy-openbao-to-local": "Copy secrets from OpenBao",
+    "register-openbao-database-engine": "Register the OpenBao database engine"
   },
   "error": {
     "error": "Error",

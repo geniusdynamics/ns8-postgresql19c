@@ -255,3 +255,36 @@ class SettingsTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DatabaseEngineTest(unittest.TestCase):
+    class StubVault:
+        def __init__(self, mounted):
+            self.mounted = mounted
+            self.calls = []
+
+        def api(self, method, path, body=None):
+            self.calls.append((method, path, body))
+            if path.startswith("sys/mounts/") and method == "GET" and not self.mounted:
+                raise ps.OpenBaoHTTPError(400, path)
+            return {}
+
+    def test_config_body(self):
+        body = ps.database_engine_config("10.5.4.1", 20005, "ns8_openbao", "pw", ["*"])
+        self.assertEqual(body["plugin_name"], "postgresql-database-plugin")
+        self.assertEqual(body["connection_url"],
+                         "postgresql://{{username}}:{{password}}@10.5.4.1:20005/postgres?sslmode=disable")
+        self.assertEqual(body["password_authentication"], "scram-sha-256")
+
+    def test_register_mounts_configures_and_rotates(self):
+        v = self.StubVault(mounted=False)
+        ps.register_database_engine(v, "database", "pg1", "10.5.4.1", 20005, "pw", ["*"])
+        self.assertEqual([(m, p) for m, p, _ in v.calls], [
+            ("GET", "sys/mounts/database"), ("POST", "sys/mounts/database"),
+            ("POST", "database/config/pg1"), ("POST", "database/rotate-root/pg1")])
+        self.assertEqual(v.calls[1][2], {"type": "database"})
+
+    def test_register_existing_mount_without_rotation(self):
+        v = self.StubVault(mounted=True)
+        ps.register_database_engine(v, "db", "pg1", "h", 1, "pw", ["app"], rotate=False)
+        self.assertEqual([p for _, p, _ in v.calls], ["sys/mounts/db", "db/config/pg1"])

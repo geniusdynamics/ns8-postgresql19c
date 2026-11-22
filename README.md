@@ -112,6 +112,7 @@ while) when either one is lost. See [high availability](docs/high-availability.m
 | `set-peer-access` | administrators | allow an instance to join this cluster |
 | `reveal-pgadmin-password` | administrators | initial pgAdmin password |
 | `copy-openbao-to-local` | administrators | copy OpenBao-only secrets to local files |
+| `register-openbao-database-engine` | administrators | OpenBao database secrets engine connection |
 | `get-configuration`, `get-cluster-status`, `list-databases`, `list-openbao-servers`, `list-openbao-only-secrets` | readers | settings, health, databases (no secrets) |
 | `grant-database`, `revoke-database` | role `pgclient` (`postgresql19c@any:pgclient`) | a consumer's database and credentials, see [integration](docs/integration.md) |
 | `admit-member`, `reconcile-cluster` | role `pgpeer` (`postgresql19c@any:pgpeer`) | between instances of this module |
@@ -130,8 +131,12 @@ while) when either one is lost. See [high availability](docs/high-availability.m
   it off)
 - UI: Settings, Status (members, roles, lag, quorum, databases), OpenBao
 
-Documented follow-ups (not implemented): the OpenBao database secrets
-engine registration, AppRole or token provisioning by ns8-openbao, client
+- `register-openbao-database-engine`: OpenBao database secrets engine
+  connection for applications that use dynamic credentials (unit tested
+  against a stub only)
+
+Documented follow-ups (not implemented): AppRole or token provisioning by
+ns8-openbao (it offers no such action yet), client
 TLS, PostgreSQL major upgrades in place, automatic disaster recovery of a
 cluster that lost its quorum (manual procedure in
 [operations](docs/operations.md#a-cluster-lost-its-quorum)).

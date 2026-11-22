@@ -152,9 +152,13 @@ class OpenBaoBackend:
         return "/".join(p for p in (self.base, name) if p)
 
     def _request(self, method, api, body=None):
+        return self.api(method, f"{self.mount}/{api}", body)
+
+    def api(self, method, path, body=None):
+        """Any OpenBao API call under /v1/ (path without the leading /v1/)"""
         if not self.address or not self.token:
             raise OpenBaoUnavailable("OpenBao address or token not set")
-        url = f"{self.address}/v1/{self.mount}/{api}"
+        url = f"{self.address}/v1/{path}"
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method, headers={
             "X-Vault-Token": self.token, "Content-Type": "application/json"})
@@ -170,7 +174,7 @@ class OpenBaoBackend:
             # 503: sealed or standby without a leader
             if ex.code in (502, 503, 504):
                 raise OpenBaoUnavailable(f"OpenBao is not available ({ex.code})") from None
-            raise OpenBaoHTTPError(ex.code, api.split("/", 1)[-1]) from None
+            raise OpenBaoHTTPError(ex.code, path.split("/", 1)[-1]) from None
         except (urllib.error.URLError, OSError, ValueError) as ex:
             raise OpenBaoUnavailable(f"cannot reach OpenBao: {type(ex).__name__}") from None
         try:
@@ -414,3 +418,40 @@ def sync_shared():
         pgha.warning("The OpenBao copy of " + ", ".join(conflicts) +
                      " differs from the local one: the local copy is used (see docs/openbao.md)")
     return bool(pushed)
+
+
+# ---------------------------------------------------------------------------
+# Database secrets engine
+# ---------------------------------------------------------------------------
+
+ENGINE_ROLE = "ns8_openbao"
+
+
+def database_engine_config(host, port, username, password, allowed_roles):
+    """Body of <mount>/config/<name> for the PostgreSQL plugin. OpenBao
+    substitutes {{username}} and {{password}} itself."""
+    return {
+        "plugin_name": "postgresql-database-plugin",
+        "connection_url": f"postgresql://{{{{username}}}}:{{{{password}}}}@{host}:{port}/postgres?sslmode=disable",
+        "username": username,
+        "password": password,
+        "password_authentication": "scram-sha-256",
+        "allowed_roles": allowed_roles,
+        "verify_connection": True,
+    }
+
+
+def register_database_engine(vault, mount, name, host, port, password, allowed_roles, rotate=True):
+    """Enable the database secrets engine at `mount` if needed, configure
+    the connection `name`, then rotate its root credential so that only
+    OpenBao knows it"""
+    try:
+        vault.api("GET", f"sys/mounts/{mount}")
+    except OpenBaoHTTPError as ex:
+        if ex.status not in (400, 404):
+            raise
+        vault.api("POST", f"sys/mounts/{mount}", {"type": "database"})
+    vault.api("POST", f"{mount}/config/{name}",
+              database_engine_config(host, port, ENGINE_ROLE, password, allowed_roles))
+    if rotate:
+        vault.api("POST", f"{mount}/rotate-root/{name}", {})
