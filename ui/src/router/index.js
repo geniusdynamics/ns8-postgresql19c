@@ -6,6 +6,7 @@ import Vue from "vue";
 import VueRouter from "vue-router";
 import Status from "../views/Status.vue";
 import Settings from "../views/Settings.vue";
+import OpenBao from "../views/OpenBao.vue";
 
 Vue.use(VueRouter);
 
@@ -20,6 +21,11 @@ const routes = [
     path: "/settings",
     name: "Settings",
     component: Settings,
+  },
+  {
+    path: "/openbao",
+    name: "OpenBao",
+    component: OpenBao,
   },
   {
     path: "/about",

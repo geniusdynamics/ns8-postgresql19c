@@ -1,19 +1,23 @@
 {
-  "name": "kickstart",
+  "name": "PostgreSQL 19 HA",
+  "upstream_name": "PostgreSQL 19",
   "description": {
-    "en": "My kickstart module"
+    "en": "PostgreSQL 19 for other modules, standalone or as a highly available cluster across nodes (Patroni, etcd, a client endpoint that follows the primary)"
   },
-  "categories": [],
+  "categories": [
+    "development"
+  ],
   "authors": [
     {
-      "name": "Name Surname",
-      "email": "author@yourmail.org"
+      "name": "Genius Dynamics",
+      "email": "support@genius.africa"
     }
   ],
   "docs": {
-    "documentation_url": "https://docs.kickstart.com/",
-    "bug_url": "https://github.com/NethServer/dev",
-    "code_url": "https://github.com/author/ns8-kickstart"
+    "documentation_url": "https://github.com/geniusdynamics/ns8-postgresql19c#readme",
+    "bug_url": "https://github.com/geniusdynamics/ns8-postgresql19c/issues",
+    "code_url": "https://github.com/geniusdynamics/ns8-postgresql19c",
+    "relnotes_url": "https://github.com/geniusdynamics/ns8-postgresql19c/releases"
   },
-  "source": "ghcr.io/nethserver/kickstart"
+  "source": "ghcr.io/geniusdynamics/postgresql19c"
 }

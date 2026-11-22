@@ -1,5 +1,6 @@
 <!--
   Copyright (C) 2022 Nethesis S.r.l.
+  Copyright (C) 2026 Genius Dynamics
   SPDX-License-Identifier: GPL-3.0-or-later
 -->
 <template>
@@ -22,132 +23,264 @@
     <cv-row>
       <cv-column>
         <cv-tile light>
-          <cv-form @submit.prevent="configureModule">
-            <cv-text-input
-              :label="$t('settings.kickstart_fqdn')"
-              placeholder="kickstart.example.org"
-              v-model.trim="host"
+          <cv-skeleton-text
+            v-if="loading.getConfiguration"
+            :paragraph="true"
+            :line-count="10"
+          ></cv-skeleton-text>
+          <cv-form v-else @submit.prevent="configureModule">
+            <cv-radio-group
+              :legend="$t('settings.role')"
+              vertical
               class="mg-bottom"
-              :invalid-message="$t(error.host)"
-              :disabled="loading.getConfiguration || loading.configureModule"
-              ref="host"
+              ref="role"
             >
-            </cv-text-input>
-            <NsToggle
-              value="letsEncrypt"
-              :label="core.$t('apps_lets_encrypt.request_https_certificate')"
-              v-model="isLetsEncryptEnabled"
-              :disabled="stillLoading"
-              class="mg-bottom"
-            >
-              <template #tooltip>
-                <div class="mg-bottom-sm">
-                  {{ core.$t("apps_lets_encrypt.lets_encrypt_tips") }}
-                </div>
-                <div class="mg-bottom-sm">
-                  <cv-link @click="goToCertificates">
-                    {{ core.$t("apps_lets_encrypt.go_to_tls_certificates") }}
-                  </cv-link>
-                </div>
-              </template>
-              <template slot="text-left">{{
-                $t("settings.disabled")
-              }}</template>
-              <template slot="text-right">{{
-                $t("settings.enabled")
-              }}</template>
-            </NsToggle>
-            <cv-row
-              v-if="isLetsEncryptCurrentlyEnabled && !isLetsEncryptEnabled"
-            >
-              <cv-column>
-                <NsInlineNotification
-                  kind="warning"
-                  :title="
-                    core.$t('apps_lets_encrypt.lets_encrypt_disabled_warning')
-                  "
-                  :description="
-                    core.$t(
-                      'apps_lets_encrypt.lets_encrypt_disabled_warning_description',
-                      {
-                        node: this.status.node_ui_name
-                          ? this.status.node_ui_name
-                          : this.status.node,
-                      }
-                    )
-                  "
-                  :showCloseButton="false"
+              <template v-for="r in roles">
+                <cv-radio-button
+                  :key="'radio-' + r"
+                  :label="$t('settings.role_' + r)"
+                  :value="r"
+                  v-model="role"
+                  :disabled="isFormDisabled || !canChooseRole(r)"
                 />
-              </cv-column>
-            </cv-row>
-            <cv-toggle
-              value="httpToHttps"
-              :label="$t('settings.http_to_https')"
-              v-model="isHttpToHttpsEnabled"
-              :disabled="loading.getConfiguration || loading.configureModule"
+                <p :key="'desc-' + r" class="radio-description">
+                  {{ $t("settings.role_" + r + "_description") }}
+                </p>
+              </template>
+            </cv-radio-group>
+            <div v-if="isJoining" class="maxwidth mg-bottom">
+              <NsComboBox
+                v-model="clusterId"
+                :options="candidateOptions"
+                :title="$t('settings.cluster_id')"
+                :label="$t('settings.cluster_id_placeholder')"
+                :invalid-message="error.cluster_id"
+                :disabled="isFormDisabled || savedRole === role"
+                :auto-filter="true"
+                :auto-highlight="true"
+                class="mg-bottom"
+                ref="cluster_id"
+              />
+              <NsInlineNotification
+                v-if="!candidateOptions.length && savedRole !== role"
+                kind="info"
+                :title="$t('settings.no_clusters')"
+                :description="$t('settings.no_clusters_description')"
+                :showCloseButton="false"
+              />
+              <NsInlineNotification
+                v-if="savedRole !== role"
+                kind="info"
+                :title="$t('settings.approval_needed')"
+                :description="
+                  $t('settings.approval_needed_description', {
+                    instance: instanceName,
+                  })
+                "
+                :showCloseButton="false"
+              />
+            </div>
+            <NsInlineNotification
+              v-if="role !== 'standalone' && expectedVoters < 3"
+              kind="warning"
+              :title="$t('settings.quorum_warning')"
+              :description="
+                $t('settings.quorum_warning_description', {
+                  count: expectedVoters,
+                })
+              "
+              :showCloseButton="false"
+            />
+            <NsInlineNotification
+              v-if="isLeaving"
+              kind="warning"
+              :title="$t('settings.leave_warning')"
+              :description="$t('settings.leave_warning_description')"
+              :showCloseButton="false"
+            />
+            <NsInlineNotification
+              v-if="role === 'join' && savedRole === 'standalone'"
+              kind="warning"
+              :title="$t('settings.join_wipes_title')"
+              :description="$t('settings.join_wipes_description')"
+              :showCloseButton="false"
+            />
+            <cv-radio-group
+              v-if="role !== 'witness'"
+              :legend="$t('settings.replication_mode')"
+              vertical
               class="mg-bottom"
             >
-              <template slot="text-left">{{
-                $t("settings.disabled")
-              }}</template>
-              <template slot="text-right">{{
-                $t("settings.enabled")
-              }}</template>
-            </cv-toggle>
+              <template v-for="mode in ['async', 'sync']">
+                <cv-radio-button
+                  :key="'mode-' + mode"
+                  :label="$t('settings.replication_' + mode)"
+                  :value="mode"
+                  v-model="replicationMode"
+                  :disabled="isFormDisabled || isClusterSettingLocked"
+                />
+                <p :key="'mode-desc-' + mode" class="radio-description">
+                  {{ $t("settings.replication_" + mode + "_description") }}
+                </p>
+              </template>
+            </cv-radio-group>
+            <!-- members allowed to join this cluster -->
+            <div v-if="isClusterMember" class="mg-bottom maxwidth">
+              <h6 class="mg-bottom-sm">{{ $t("settings.peer_access") }}</h6>
+              <p class="helper mg-bottom-sm">
+                {{ $t("settings.peer_access_description") }}
+              </p>
+              <NsEmptyState
+                v-if="!peerCandidates.length"
+                :title="$t('settings.no_peer_candidates')"
+              />
+              <div
+                v-for="peer in peerCandidates"
+                :key="peer.module_id"
+                class="peer"
+              >
+                <NsToggle
+                  :value="peer.module_id"
+                  :form-item="true"
+                  :label="peerLabel(peer)"
+                  :checked="peer.allowed"
+                  :disabled="loading.peerAccess || isFormDisabled"
+                  @change="setPeerAccess(peer, $event)"
+                >
+                  <template slot="text-left">{{
+                    $t("settings.not_allowed")
+                  }}</template>
+                  <template slot="text-right">{{
+                    $t("settings.allowed")
+                  }}</template>
+                </NsToggle>
+              </div>
+              <NsInlineNotification
+                v-if="error.peerAccess"
+                kind="error"
+                :title="$t('action.set-peer-access')"
+                :description="error.peerAccess"
+                :showCloseButton="false"
+              />
+            </div>
             <!-- advanced options -->
             <cv-accordion ref="accordion" class="maxwidth mg-bottom">
               <cv-accordion-item :open="toggleAccordion[0]">
                 <template slot="title">{{ $t("settings.advanced") }}</template>
-                <template slot="content"> </template>
-              </cv-accordion-item>
-            </cv-accordion>
-            <cv-row v-if="error.configureModule">
-              <cv-column>
-                <NsInlineNotification
-                  kind="error"
-                  :title="$t('action.configure-module')"
-                  :description="error.configureModule"
-                  :showCloseButton="false"
-                />
-              </cv-column>
-            </cv-row>
-            <cv-row v-if="error.getStatus">
-              <cv-column>
-                <NsInlineNotification
-                  kind="error"
-                  :title="$t('action.get-status')"
-                  :description="error.getStatus"
-                  :showCloseButton="false"
-                />
-              </cv-column>
-            </cv-row>
-            <cv-row v-if="validationErrorDetails.length">
-              <cv-column>
-                <NsInlineNotification
-                  kind="error"
-                  :title="
-                    core.$t('apps_lets_encrypt.cannot_obtain_certificate')
-                  "
-                  :showCloseButton="false"
-                >
-                  <template #description>
-                    <div class="flex flex-col gap-2">
-                      <div
-                        v-for="(detail, index) in validationErrorDetails"
-                        :key="index"
+                <template slot="content">
+                  <NsTextInput
+                    v-model.trim="maxConnections"
+                    type="number"
+                    min="20"
+                    max="5000"
+                    :label="$t('settings.max_connections')"
+                    :helper-text="$t('settings.max_connections_helper')"
+                    :invalid-message="error.max_connections"
+                    :disabled="isFormDisabled || isClusterSettingLocked"
+                    ref="max_connections"
+                  />
+                  <NsToggle
+                    value="pgadmin"
+                    :label="$t('settings.pgadmin_enabled')"
+                    v-model="pgadminEnabled"
+                    :disabled="isFormDisabled"
+                    class="mg-bottom"
+                  >
+                    <template #tooltip>{{
+                      $t("settings.pgadmin_tooltip")
+                    }}</template>
+                    <template slot="text-left">{{
+                      $t("common.disabled")
+                    }}</template>
+                    <template slot="text-right">{{
+                      $t("common.enabled")
+                    }}</template>
+                  </NsToggle>
+                  <template v-if="pgadminEnabled">
+                    <NsTextInput
+                      v-model.trim="host"
+                      :label="$t('settings.pgadmin_host')"
+                      placeholder="pgadmin.example.org"
+                      :invalid-message="error.host"
+                      :disabled="isFormDisabled"
+                      ref="host"
+                    />
+                    <NsTextInput
+                      v-model.trim="pgadminEmail"
+                      :label="$t('settings.pgadmin_email')"
+                      :helper-text="$t('settings.pgadmin_email_helper')"
+                      :invalid-message="error.pgadmin_email"
+                      :disabled="isFormDisabled"
+                      ref="pgadmin_email"
+                    />
+                    <NsToggle
+                      value="letsEncrypt"
+                      :label="$t('settings.lets_encrypt')"
+                      v-model="letsEncrypt"
+                      :disabled="isFormDisabled"
+                    >
+                      <template slot="text-left">{{
+                        $t("common.disabled")
+                      }}</template>
+                      <template slot="text-right">{{
+                        $t("common.enabled")
+                      }}</template>
+                    </NsToggle>
+                    <NsToggle
+                      value="http2https"
+                      :label="$t('settings.http2https')"
+                      v-model="http2https"
+                      :disabled="isFormDisabled"
+                    >
+                      <template slot="text-left">{{
+                        $t("common.disabled")
+                      }}</template>
+                      <template slot="text-right">{{
+                        $t("common.enabled")
+                      }}</template>
+                    </NsToggle>
+                    <div v-if="savedPgadmin" class="mg-bottom">
+                      <NsButton
+                        kind="tertiary"
+                        size="field"
+                        :icon="Password20"
+                        :loading="loading.reveal"
+                        :disabled="isFormDisabled || loading.reveal"
+                        @click.prevent="revealPgadminPassword"
+                        >{{ $t("settings.reveal_pgadmin_password") }}</NsButton
                       >
-                        {{ detail }}
-                      </div>
+                      <NsCodeSnippet
+                        v-if="pgadminPassword"
+                        :copyTooltip="core.$t('common.copy_to_clipboard')"
+                        :copy-feedback="core.$t('common.copied_to_clipboard')"
+                        :feedback-aria-label="
+                          core.$t('common.copied_to_clipboard')
+                        "
+                        :wrap-text="true"
+                        :moreText="core.$t('common.show_more')"
+                        :lessText="core.$t('common.show_less')"
+                        hideExpandButton
+                        light
+                        class="mg-top-sm"
+                        >{{ pgadminPassword }}</NsCodeSnippet
+                      >
                     </div>
                   </template>
-                </NsInlineNotification>
-              </cv-column>
-            </cv-row>
+                </template>
+              </cv-accordion-item>
+            </cv-accordion>
+            <NsInlineNotification
+              v-if="error.configureModule"
+              kind="error"
+              :title="$t('action.configure-module')"
+              :description="error.configureModule"
+              :showCloseButton="false"
+            />
             <NsButton
               kind="primary"
               :icon="Save20"
               :loading="loading.configureModule"
-              :disabled="loading.getConfiguration || loading.configureModule"
+              :disabled="isFormDisabled"
               >{{ $t("settings.save") }}</NsButton
             >
           </cv-form>
@@ -158,7 +291,6 @@
 </template>
 
 <script>
-import to from "await-to-js";
 import { mapState } from "vuex";
 import {
   QueryParamService,
@@ -167,6 +299,7 @@ import {
   IconService,
   PageTitleService,
 } from "@nethserver/ns8-ui-lib";
+import ModuleTask from "@/mixins/moduleTask";
 
 export default {
   name: "Settings",
@@ -176,6 +309,7 @@ export default {
     UtilService,
     QueryParamService,
     PageTitleService,
+    ModuleTask,
   ],
   pageTitle() {
     return this.$t("settings.title") + " - " + this.appName;
@@ -185,41 +319,92 @@ export default {
       q: {
         page: "settings",
       },
-      status: {},
-      validationErrorDetails: [],
       urlCheckInterval: null,
+      roles: ["standalone", "initial", "join", "witness"],
+      role: "standalone",
+      savedRole: "",
+      clusterId: "",
+      replicationMode: "async",
+      maxConnections: "300",
+      members: [],
+      candidates: [],
+      peerCandidates: [],
+      pgadminEnabled: false,
+      savedPgadmin: false,
+      pgadminPassword: "",
       host: "",
-      isLetsEncryptEnabled: false,
-      isLetsEncryptCurrentlyEnabled: false,
-      isHttpToHttpsEnabled: true,
+      pgadminEmail: "",
+      letsEncrypt: false,
+      http2https: true,
+      vault: {},
       loading: {
         getConfiguration: false,
         configureModule: false,
-        getStatus: false,
+        peerAccess: false,
+        reveal: false,
       },
       error: {
         getConfiguration: "",
         configureModule: "",
+        peerAccess: "",
+        role: "",
+        cluster_id: "",
+        max_connections: "",
         host: "",
-        lets_encrypt: "",
-        http2https: "",
-        getStatus: false,
+        pgadmin_email: "",
       },
     };
   },
   computed: {
     ...mapState(["instanceName", "core", "appName"]),
-    stillLoading() {
+    isFormDisabled() {
+      return this.loading.getConfiguration || this.loading.configureModule;
+    },
+    isJoining() {
+      return this.role === "join" || this.role === "witness";
+    },
+    isClusterMember() {
+      return ["initial", "join", "witness"].includes(this.savedRole);
+    },
+    isLeaving() {
       return (
-        this.loading.getConfiguration ||
-        this.loading.configureModule ||
-        this.loading.getStatus
+        this.isClusterMember &&
+        this.role === "standalone" &&
+        this.members.length > 1
       );
+    },
+    isClusterSettingLocked() {
+      // A joining member takes the settings of its cluster
+      return this.isJoining && this.savedRole !== this.role;
+    },
+    candidateOptions() {
+      return this.candidates.map((c) => ({
+        name: c.cluster_id,
+        value: c.cluster_id,
+        label: this.$t("settings.cluster_option", {
+          cluster: c.cluster_id,
+          members: c.members.join(", "),
+        }),
+      }));
+    },
+    expectedVoters() {
+      if (this.isClusterMember && this.savedRole === this.role) {
+        return this.members.length;
+      }
+      if (this.role === "initial") {
+        return Math.max(this.members.length, 1);
+      }
+      if (this.isJoining) {
+        const cluster = this.candidates.find(
+          (c) => c.cluster_id === this.clusterId
+        );
+        return cluster ? cluster.members.length + 1 : 1;
+      }
+      return 1;
     },
   },
   created() {
     this.getConfiguration();
-    this.getStatus();
   },
   beforeRouteEnter(to, from, next) {
     next((vm) => {
@@ -232,203 +417,126 @@ export default {
     next();
   },
   methods: {
-    goToCertificates() {
-      this.core.$router.push("/settings/tls-certificates");
-    },
-    async getStatus() {
-      this.loading.getStatus = true;
-      this.error.getStatus = "";
-      const taskAction = "get-status";
-      const eventId = this.getUuid();
-      // register to task error
-      this.core.$root.$once(
-        `${taskAction}-aborted-${eventId}`,
-        this.getStatusAborted
-      );
-      // register to task completion
-      this.core.$root.$once(
-        `${taskAction}-completed-${eventId}`,
-        this.getStatusCompleted
-      );
-      const res = await to(
-        this.createModuleTaskForApp(this.instanceName, {
-          action: taskAction,
-          extra: {
-            title: this.$t("action." + taskAction),
-            isNotificationHidden: true,
-            eventId,
-          },
-        })
-      );
-      const err = res[0];
-      if (err) {
-        console.error(`error creating task ${taskAction}`, err);
-        this.error.getStatus = this.getErrorMessage(err);
-        this.loading.getStatus = false;
-        return;
+    canChooseRole(role) {
+      // Allowed changes, as checked by configure-module
+      const saved = this.savedRole;
+      if (!saved || saved === "standalone" || saved === role) {
+        return true;
       }
+      return role === "standalone";
     },
-    getStatusAborted(taskResult, taskContext) {
-      console.error(`${taskContext.action} aborted`, taskResult);
-      this.error.getStatus = this.$t("error.generic_error");
-      this.loading.getStatus = false;
-    },
-    getStatusCompleted(taskContext, taskResult) {
-      this.status = taskResult.output;
-      this.loading.getStatus = false;
+    peerLabel(peer) {
+      const name = peer.ui_name
+        ? `${peer.ui_name} (${peer.module_id})`
+        : peer.module_id;
+      return this.$t("settings.peer_label", { name, node: peer.node });
     },
     async getConfiguration() {
       this.loading.getConfiguration = true;
       this.error.getConfiguration = "";
-      const taskAction = "get-configuration";
-      const eventId = this.getUuid();
-
-      // register to task error
-      this.core.$root.$once(
-        `${taskAction}-aborted-${eventId}`,
-        this.getConfigurationAborted
-      );
-
-      // register to task completion
-      this.core.$root.$once(
-        `${taskAction}-completed-${eventId}`,
-        this.getConfigurationCompleted
-      );
-
-      const res = await to(
-        this.createModuleTaskForApp(this.instanceName, {
-          action: taskAction,
-          extra: {
-            title: this.$t("action." + taskAction),
-            isNotificationHidden: true,
-            eventId,
-          },
-        })
-      );
-      const err = res[0];
-
-      if (err) {
-        console.error(`error creating task ${taskAction}`, err);
-        this.error.getConfiguration = this.getErrorMessage(err);
-        this.loading.getConfiguration = false;
-        return;
+      try {
+        const config = await this.runModuleTask("get-configuration");
+        this.savedRole = config.role;
+        this.role = config.role || "standalone";
+        this.clusterId = config.role === "standalone" ? "" : config.cluster_id;
+        this.replicationMode = config.replication_mode || "async";
+        this.maxConnections = String(config.max_connections || 300);
+        this.members = config.members || [];
+        this.candidates = config.cluster_candidates || [];
+        this.peerCandidates = config.peer_candidates || [];
+        this.pgadminEnabled = config.pgadmin_enabled;
+        this.savedPgadmin = config.pgadmin_enabled;
+        this.host = config.host || "";
+        this.pgadminEmail = config.pgadmin_email || "";
+        this.letsEncrypt = config.lets_encrypt;
+        this.http2https = config.http2https;
+      } catch (failure) {
+        this.error.getConfiguration = this.taskErrorMessage(failure);
       }
-    },
-    getConfigurationAborted(taskResult, taskContext) {
-      console.error(`${taskContext.action} aborted`, taskResult);
-      this.error.getConfiguration = this.$t("error.generic_error");
       this.loading.getConfiguration = false;
-    },
-    getConfigurationCompleted(taskContext, taskResult) {
-      const config = taskResult.output;
-      this.host = config.host;
-      this.isLetsEncryptEnabled = config.lets_encrypt;
-      this.isLetsEncryptCurrentlyEnabled = config.lets_encrypt;
-      this.isHttpToHttpsEnabled = config.http2https;
-
-      this.loading.getConfiguration = false;
-      this.focusElement("host");
     },
     validateConfigureModule() {
       this.clearErrors(this);
-      this.validationErrorDetails = [];
-
-      let isValidationOk = true;
-      if (!this.host) {
-        this.error.host = "common.required";
-
-        if (isValidationOk) {
-          this.focusElement("host");
-        }
-        isValidationOk = false;
+      let ok = true;
+      if (this.isJoining && !this.clusterId) {
+        this.error.cluster_id = this.$t("common.required");
+        this.focusElement("cluster_id");
+        ok = false;
       }
-      return isValidationOk;
-    },
-    configureModuleValidationFailed(validationErrors) {
-      this.loading.configureModule = false;
-      let focusAlreadySet = false;
-      for (const validationError of validationErrors) {
-        const param = validationError.parameter;
-        if (validationError.details) {
-          // show inline error notification with details
-          this.validationErrorDetails = validationError.details
-            .split("\n")
-            .filter((detail) => detail.trim() !== "");
-        } else {
-          // set i18n error message
-          this.error[param] = this.$t("settings." + validationError.error);
-          if (!focusAlreadySet) {
-            this.focusElement(param);
-            focusAlreadySet = true;
-          }
-        }
+      const conn = Number(this.maxConnections);
+      if (!Number.isInteger(conn) || conn < 20 || conn > 5000) {
+        this.error.max_connections = this.$t(
+          "settings.max_connections_invalid"
+        );
+        ok = false;
       }
+      if (this.pgadminEnabled && !this.host) {
+        this.error.host = this.$t("common.required");
+        ok = false;
+      }
+      return ok;
     },
     async configureModule() {
-      this.error.test_imap = false;
-      this.error.test_smtp = false;
-      const isValidationOk = this.validateConfigureModule();
-      if (!isValidationOk) {
+      if (!this.validateConfigureModule()) {
         return;
       }
-
+      const data = {
+        role: this.role,
+        pgadmin_enabled: this.pgadminEnabled,
+      };
+      if (this.isJoining) {
+        data.cluster_id = this.clusterId;
+      }
+      if (!this.isClusterSettingLocked) {
+        data.replication_mode = this.replicationMode;
+        data.max_connections = Number(this.maxConnections);
+      }
+      if (this.pgadminEnabled) {
+        data.host = this.host;
+        data.lets_encrypt = this.letsEncrypt;
+        data.http2https = this.http2https;
+        if (this.pgadminEmail) {
+          data.pgadmin_email = this.pgadminEmail;
+        }
+      }
       this.loading.configureModule = true;
-      const taskAction = "configure-module";
-      const eventId = this.getUuid();
-
-      // register to task error
-      this.core.$root.$once(
-        `${taskAction}-aborted-${eventId}`,
-        this.configureModuleAborted
-      );
-
-      // register to task validation
-      this.core.$root.$once(
-        `${taskAction}-validation-failed-${eventId}`,
-        this.configureModuleValidationFailed
-      );
-
-      // register to task completion
-      this.core.$root.$once(
-        `${taskAction}-completed-${eventId}`,
-        this.configureModuleCompleted
-      );
-      const res = await to(
-        this.createModuleTaskForApp(this.instanceName, {
-          action: taskAction,
-          data: {
-            host: this.host,
-            lets_encrypt: this.isLetsEncryptEnabled,
-            http2https: this.isHttpToHttpsEnabled,
-          },
-          extra: {
-            title: this.$t("settings.instance_configuration", {
-              instance: this.instanceName,
-            }),
-            description: this.$t("settings.configuring"),
-            eventId,
-          },
-        })
-      );
-      const err = res[0];
-
-      if (err) {
-        console.error(`error creating task ${taskAction}`, err);
-        this.error.configureModule = this.getErrorMessage(err);
-        this.loading.configureModule = false;
-        return;
+      try {
+        await this.runModuleTask("configure-module", data, {
+          title: this.$t("settings.instance_configuration", {
+            instance: this.instanceName,
+          }),
+          description: this.$t("settings.configuring"),
+          hidden: false,
+        });
+        this.getConfiguration();
+      } catch (failure) {
+        this.error.configureModule = this.taskErrorMessage(failure);
       }
-    },
-    configureModuleAborted(taskResult, taskContext) {
-      console.error(`${taskContext.action} aborted`, taskResult);
-      this.error.configureModule = this.$t("error.generic_error");
       this.loading.configureModule = false;
     },
-    configureModuleCompleted() {
-      this.loading.configureModule = false;
-
-      // reload configuration
-      this.getConfiguration();
+    async setPeerAccess(peer, allowed) {
+      this.error.peerAccess = "";
+      this.loading.peerAccess = true;
+      try {
+        await this.runModuleTask("set-peer-access", {
+          peer: peer.module_id,
+          allowed: !!allowed,
+        });
+        peer.allowed = !!allowed;
+      } catch (failure) {
+        this.error.peerAccess = this.taskErrorMessage(failure);
+      }
+      this.loading.peerAccess = false;
+    },
+    async revealPgadminPassword() {
+      this.loading.reveal = true;
+      try {
+        const out = await this.runModuleTask("reveal-pgadmin-password");
+        this.pgadminPassword = out.password;
+      } catch (failure) {
+        this.error.configureModule = this.taskErrorMessage(failure);
+      }
+      this.loading.reveal = false;
     },
   },
 };
@@ -440,7 +548,25 @@ export default {
   margin-bottom: $spacing-06;
 }
 
+.mg-bottom-sm {
+  margin-bottom: $spacing-04;
+}
+
+.mg-top-sm {
+  margin-top: $spacing-04;
+}
+
 .maxwidth {
   max-width: 38rem;
+}
+
+.helper {
+  color: $text-02;
+}
+
+.radio-description {
+  max-width: 38rem;
+  margin: 0 0 $spacing-05 $spacing-07;
+  color: $text-02;
 }
 </style>
