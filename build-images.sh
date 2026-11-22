@@ -64,9 +64,12 @@ buildah add "${container}" ui/dist /ui
 #   client endpoint (read-write), client endpoint (read-only), pgAdmin,
 #   public endpoint (TLS only). The others listen on loopback and/or the
 #   node cluster VPN address, which is in the trusted firewall zone.
+# - openbao@any:secretsclient: client provisioning of ns8-openbao (the
+#   module's own token, the database engine ns8-db-<module id>, the group
+#   postgresql19c-<cluster id>-peers of the shared secrets)
 # - rootless module; core 3.20.1+ as the module template
 buildah config --entrypoint=/ \
-    --label="org.nethserver.authorizations=traefik@node:routeadm node:fwadm postgresql19c@any:pgpeer" \
+    --label="org.nethserver.authorizations=traefik@node:routeadm node:fwadm postgresql19c@any:pgpeer openbao@any:secretsclient" \
     --label="org.nethserver.tcp-ports-demand=8" \
     --label="org.nethserver.rootfull=0" \
     --label="org.nethserver.min-core=3.20.1" \

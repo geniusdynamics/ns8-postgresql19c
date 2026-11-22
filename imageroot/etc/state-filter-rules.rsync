@@ -4,3 +4,6 @@
 - psql/
 - .configure-warnings.json
 - firewall.json
+# The provisioned OpenBao tokens are bound to this module ID: a clone asks
+# for its own
+- openbao-client/

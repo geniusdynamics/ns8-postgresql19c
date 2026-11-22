@@ -1,0 +1,19 @@
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+#
+# OpenBao client provisioning (vault_auth "provisioned"): provision,
+# renew and replace the module's own OpenBao tokens. See docs/openbao.md.
+#
+
+[Unit]
+Description=PostgreSQL OpenBao client token maintenance
+
+[Service]
+Type=oneshot
+EnvironmentFile=%S/state/environment
+WorkingDirectory=%S/state
+SyslogIdentifier=%N
+ExecStart=runagent pgha-openbao-client

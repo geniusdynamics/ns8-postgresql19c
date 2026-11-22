@@ -14,11 +14,17 @@
 # follows the primary. Warpgate and other applications that read a static
 # database URL keep using grant-database.
 #
+# In provisioned mode (vault_auth "provisioned") the module token of
+# ns8-openbao is used and the mount is ns8-db-<module id> (database_engine
+# granted by the OpenBao administrator); the mount input must be empty or
+# equal to it.
+#
 
 import json
 import sys
 
 import agent
+import openbao_client
 import pgha
 import pgha_secrets as ps
 
@@ -26,7 +32,18 @@ data = json.load(sys.stdin)
 settings = ps.vault_settings()
 if not settings["vault_enabled"] or not pgha.role():
     pgha.validation_error("vault_enabled", False, "openbao_disabled")
-mount = data.get("mount") or "database"
+provisioned = settings["vault_auth"] == "provisioned"
+if provisioned:
+    # Provisioned mode: the mount ns8-db-<module id> that ns8-openbao created
+    # for this module when the administrator approved database_engine
+    client = openbao_client.public_state()
+    if not client["active"] or not client["database_engine"] or not client["database_mount"]:
+        pgha.validation_error("mount", data.get("mount", ""), "openbao_database_engine_not_granted")
+    if data.get("mount") and data["mount"] != client["database_mount"]:
+        pgha.validation_error("mount", data["mount"], "openbao_database_mount_fixed")
+    mount = client["database_mount"]
+else:
+    mount = data.get("mount") or "database"
 name = data.get("connection") or pgha.cluster_id()
 allowed = data.get("allowed_roles") or ["*"]
 
@@ -50,7 +67,7 @@ endpoint = pgha.pick_endpoint(pgha.client_endpoints())
 vault = ps.make_vault(settings)
 try:
     ps.register_database_engine(vault, mount, name, endpoint["host"], endpoint["port"], password, allowed,
-                                rotate=data.get("rotate_root", True))
+                                rotate=data.get("rotate_root", True), provisioned=provisioned)
 except ps.OpenBaoUnavailable:
     pgha.validation_error("vault_address", settings["vault_address"], "openbao_unreachable")
 except ps.OpenBaoHTTPError as ex:

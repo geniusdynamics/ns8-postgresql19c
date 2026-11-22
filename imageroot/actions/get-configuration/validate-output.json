@@ -136,6 +136,24 @@
         "vault_tls_skip_verify": {
             "type": "boolean"
         },
+        "vault_auth": {"type": "string", "enum": ["token", "provisioned"]},
+        "vault_provider": {"type": "string"},
+        "vault_client": {
+            "type": "object",
+            "description": "Provisioned mode state, without tokens",
+            "properties": {
+                "active": {"type": "boolean"},
+                "openbao_module_id": {"type": "string"},
+                "address": {"type": "string"},
+                "kv_mount": {"type": "string"},
+                "kv_prefix": {"type": "string"},
+                "database_engine": {"type": "boolean"},
+                "database_mount": {"type": "string"},
+                "groups": {"type": "array", "items": {"type": "string"}},
+                "issued_at": {"type": "integer"},
+                "renewed_at": {"type": "integer"}
+            }
+        },
         "vault_only_secrets": {
             "type": "array",
             "items": {

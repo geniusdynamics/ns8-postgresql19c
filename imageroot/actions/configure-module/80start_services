@@ -44,6 +44,7 @@ for unit in units:
     agent.set_progress(20 + 60 * (units.index(unit) + 1) // len(units))
 
 pgha.systemctl("enable", "--now", "pgha-reconcile.timer", check=False)
+pgha.systemctl("enable", "--now", "pgha-openbao-client.timer", check=False)
 
 if pgha.runs_postgres():
     state = pgha.wait_patroni(timeout=900)

@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# "Request access from OpenBao": record an access request on the ns8-openbao
+# instance (request-client-access) for the database engine and the group
+# postgresql19c-<cluster id>-peers. When the module is already approved and
+# provisioned mode is on, the tokens are provisioned at once. No secret in
+# the output.
+
+import json
+import sys
+
+import agent
+import openbao_client
+import pgha_secrets as ps
+
+data = json.load(sys.stdin)
+settings = ps.vault_settings()
+provider = data.get("openbao_module_id") or settings["vault_provider"] or ""
+if not provider:
+    agent.set_status('validation-failed')
+    json.dump([{'field': 'openbao_module_id', 'parameter': 'openbao_module_id', 'value': '',
+                'error': 'required'}], fp=sys.stdout)
+    sys.exit(3)
+try:
+    status = openbao_client.request_access(provider, True, [ps.cluster_group()])
+except openbao_client.ClientError as ex:
+    agent.set_status('validation-failed')
+    json.dump([{'field': 'openbao_module_id', 'parameter': 'openbao_module_id', 'value': provider,
+                'error': ex.code}], fp=sys.stdout)
+    sys.exit(3)
+
+result = ""
+if status.get("status") == "approved" and ps.provisioned_wanted(settings) and settings["vault_provider"] == provider:
+    result, _ = ps.client_step(settings)
+json.dump({"status": status.get("status", "none"), "provisioning": result,
+           "group": ps.cluster_group(), "client": openbao_client.public_state()}, fp=sys.stdout)
