@@ -61,8 +61,18 @@ if new_role in ("join", "witness"):
 elif new_role == "initial" and current in ("join", "witness"):
     pgha.validation_error("role", new_role, "leave_cluster_first")
 
-if data.get("pgadmin_enabled") and not (data.get("host") or "").strip():
+if data.get("pgadmin_enabled") and not (data.get("host") or "").strip() and not data.get("pgadmin_path"):
     pgha.validation_error("host", "", "required")
+
+for field in ("public_access_allowlist", "pgadmin_ip_allowlist"):
+    for item in data.get(field) or []:
+        try:
+            net = pgha.normalize_network(item)
+        except ValueError:
+            pgha.validation_error(field, item, "invalid_network")
+        if field == "public_access_allowlist" and ":" in net:
+            # The public endpoint listens on IPv4
+            pgha.validation_error(field, item, "ipv6_not_supported")
 
 if data.get("vault_enabled"):
     settings = pgha_secrets.vault_settings()

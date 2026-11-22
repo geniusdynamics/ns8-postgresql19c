@@ -23,6 +23,9 @@ agent.mset_env({
     "ENDPOINT_PORT": str(p["endpoint"]),
     "ENDPOINT_RO_PORT": str(p["endpoint_ro"]),
     "PGADMIN_PORT": str(p["pgadmin"]),
+    "PUBLIC_PORT": str(p["public"]),
+    "PG_PUBLIC_ACCESS": "0",
+    "PG_PUBLIC_ALLOWLIST": "",
     "PGADMIN_ENABLED": "0",
     "PGADMIN_EMAIL": "admin@nethserver.org",
 })

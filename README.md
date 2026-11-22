@@ -33,6 +33,8 @@ Documentation:
   troubleshooting
 - [OpenBao](docs/openbao.md): the SecretManager, OpenBao mode, boot
   without OpenBao
+- [Network access](docs/network-access.md): pgAdmin, direct database
+  access from outside the cluster (firewall, allowlist, TLS)
 - [Development](docs/development.md): tests and the container test
 
 ## Versions
@@ -95,7 +97,8 @@ api-cli run configure-module --agent module/postgresql19c3 --data '{"role": "joi
 | `cluster_id` | with `join` or `witness`: the cluster, from `get-configuration` `cluster_candidates` |
 | `replication_mode` | cluster-wide: `async` (default) or `sync` |
 | `max_connections` | cluster-wide, default 300 |
-| `pgadmin_enabled`, `host`, `http2https`, `lets_encrypt`, `pgadmin_email` | optional pgAdmin behind Traefik |
+| `pgadmin_enabled`, `host`, `pgadmin_path`, `lets_encrypt`, `pgadmin_email`, `pgadmin_ip_allowlist` | optional pgAdmin behind Traefik, HTTPS only |
+| `public_access_enabled`, `public_access_allowlist` | direct access from outside the cluster, TLS only, per instance, see [network access](docs/network-access.md) |
 | `vault_*` | optional OpenBao, see [docs/openbao.md](docs/openbao.md) |
 | `allow_same_node` | with `initial`: several members on one node. **Tests only** |
 
@@ -129,7 +132,11 @@ while) when either one is lost. See [high availability](docs/high-availability.m
 - SecretManager (local 0600 files) and opt-in OpenBao mode (KV v2,
   local cache, sync on the reconcile timer, copy to local when turning
   it off)
-- UI: Settings, Status (members, roles, lag, quorum, databases), OpenBao
+- Network access per instance: pgAdmin route (host or path, allowlist),
+  direct access through a TLS-only public endpoint, firewall opening or
+  source rich rules, the same allowlist in the proxy
+- UI: Settings (with Network access), Status (members, roles, lag, quorum,
+  databases), OpenBao
 
 - `register-openbao-database-engine`: OpenBao database secrets engine
   connection for applications that use dynamic credentials (unit tested

@@ -18,6 +18,11 @@ import agent
 import pgha
 
 try:
+    pgha.apply_firewall(enabled=False)
+except Exception as ex:
+    print(agent.SD_WARNING + f"Closing the public endpoint failed: {ex}", file=sys.stderr)
+
+try:
     if pgha.is_cluster():
         member_list = pgha.cluster_members()
         if [m for m in member_list if m["module_id"] != pgha.env("MODULE_ID")]:

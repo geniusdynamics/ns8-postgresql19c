@@ -134,10 +134,9 @@
     "max_connections_invalid": "A number from 20 to 5000",
     "pgadmin_enabled": "pgAdmin",
     "pgadmin_tooltip": "Web administration tool published by Traefik",
-    "pgadmin_host": "pgAdmin host name (FQDN)",
+    "pgadmin_host": "pgAdmin host name (FQDN), optional with a path",
     "pgadmin_email": "pgAdmin login email",
     "pgadmin_email_helper": "Used when pgAdmin starts for the first time",
-    "http2https": "Force HTTPS",
     "reveal_pgadmin_password": "Show the initial pgAdmin password",
     "required": "Required",
     "no_vpn_address": "This node has no cluster VPN address",
@@ -147,7 +146,19 @@
     "instance_not_empty": "This instance has databases: it cannot join",
     "cannot_check_databases": "Cannot check the databases of this instance",
     "not_admitted": "No member admitted this instance: allow it on a member first",
-    "cannot_leave_cluster": "Cannot leave the cluster: no healthy replica can take over"
+    "cannot_leave_cluster": "Cannot leave the cluster: no healthy replica can take over",
+    "pgadmin_path": "pgAdmin path",
+    "pgadmin_path_helper": "Optional, e.g. /pgadmin: publish pgAdmin under this path. pgAdmin is always served over HTTPS",
+    "pgadmin_ip_allowlist": "pgAdmin allowed sources",
+    "allowlist_helper": "One IP address or network (CIDR) per line. Empty: any source",
+    "network_access": "Network access of this instance",
+    "network_access_description": "Other modules always reach PostgreSQL over the cluster VPN. These settings apply to this node only.",
+    "public_access_enabled": "Direct database access from outside the cluster",
+    "public_access_tooltip": "Opens the public endpoint port of this node in the firewall. TLS is required",
+    "public_access_allowlist": "Allowed sources",
+    "public_any_source": "Open to any source",
+    "public_any_source_description": "Every address can try to log in to PostgreSQL. Restrict the sources unless the clients are everywhere.",
+    "public_access_connect": "Clients connect to port {port} of this node with sslmode=verify-ca (or require) and this CA certificate:"
   },
   "about": {
     "title": "About"
@@ -211,7 +222,9 @@
     "login_role_not_managed": "A role with this name exists and is not managed by this module",
     "database_not_managed": "The database is not managed by this module",
     "invalid_client_id": "Invalid client",
-    "not_the_database_creator": "Only the module that created the database can drop it"
+    "not_the_database_creator": "Only the module that created the database can drop it",
+    "invalid_network": "Not a valid IP address or network",
+    "ipv6_not_supported": "IPv6 is not supported for direct access"
   },
   "openbao": {
     "title": "OpenBao",

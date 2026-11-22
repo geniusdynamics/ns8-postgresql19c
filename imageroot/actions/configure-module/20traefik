@@ -5,7 +5,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 
-# Optional pgAdmin route. ns8-traefik drops it with the module.
+# Optional pgAdmin route: a host name and/or a path, HTTPS only, an
+# optional source allowlist (Traefik ip_allowlist). Turning pgAdmin off
+# deletes the route (80start_services stops the container). ns8-traefik
+# drops the route with the module.
 
 import json
 import os
@@ -20,21 +23,33 @@ data = json.load(sys.stdin)
 enabled = pgha.env("PGADMIN_ENABLED") == "1"
 host = (data.get("host") or pgha.env("TRAEFIK_HOST")).strip()
 
+path = pgha.env("PGADMIN_PATH")
+allow = [i for i in pgha.env("PGADMIN_IP_ALLOWLIST").split(",") if i]
+
 if enabled:
-    http2https = data.get("http2https", pgha.env("TRAEFIK_HTTP2HTTPS", "True").lower() == "true")
+    # HTTPS only: plain HTTP is always redirected
+    http2https = True
     lets_encrypt = data.get("lets_encrypt", pgha.env("TRAEFIK_LETS_ENCRYPT", "False").lower() == "true")
-    agent.set_route({
+    route = {
         "instance": os.environ["MODULE_ID"],
         "url": "http://127.0.0.1:" + str(pgha.ports()["pgadmin"]),
-        "host": host,
         "http2https": http2https,
-        "lets_encrypt": lets_encrypt,
-    })
+        "lets_encrypt": lets_encrypt and bool(host),
+    }
+    if host:
+        route["host"] = host
+    if path:
+        # pgAdmin serves the prefix itself (SCRIPT_NAME): no strip
+        route["path"] = path
+        route["strip_prefix"] = False
+    if allow:
+        route["ip_allowlist"] = allow
+    agent.set_route(route)
     agent.mset_env({"TRAEFIK_HOST": host, "TRAEFIK_HTTP2HTTPS": str(http2https),
-                    "TRAEFIK_LETS_ENCRYPT": str(lets_encrypt)})
-elif pgha.env("TRAEFIK_HOST"):
+                    "TRAEFIK_LETS_ENCRYPT": str(lets_encrypt), "PGADMIN_ROUTE": "1"})
+elif pgha.env("PGADMIN_ROUTE") == "1" or pgha.env("TRAEFIK_HOST"):
     ret = agent.tasks.run(agent_id=agent.resolve_agent_id("traefik@node"), action="delete-route",
                           data={"instance": os.environ["MODULE_ID"]})
     if ret["exit_code"] != 0:
         print(agent.SD_WARNING + "The pgAdmin route was not removed", file=sys.stderr)
-    agent.mset_env({"TRAEFIK_HOST": ""})
+    agent.mset_env({"PGADMIN_ROUTE": "0"})

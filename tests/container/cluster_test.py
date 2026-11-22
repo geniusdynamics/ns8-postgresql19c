@@ -39,7 +39,7 @@ import pgha  # noqa: E402
 NET = "pg19ctest"
 SUBNET = "172.30.77.0/24"
 PORTS = {"pg": 5432, "patroni": 8008, "etcd_client": 2379, "etcd_peer": 2380,
-         "endpoint": 5000, "endpoint_ro": 5001, "pgadmin": 0}
+         "endpoint": 5000, "endpoint_ro": 5001, "pgadmin": 0, "public": 5002}
 HAPROXY_IMAGE = "docker.io/library/haproxy:3.2.27-alpine"
 
 
@@ -127,9 +127,9 @@ class Node:
            "-v", f"{self.name}-pgdata:/var/lib/postgresql", "-v", f"{os.path.join(self.dir, 'patroni')}:/etc/patroni",
            self.test.image)
 
-    def start_proxy(self, members):
+    def start_proxy(self, members, public=None):
         self.write("pgproxy", "haproxy.cfg", pgha.render_haproxy({
-            "host": self.ip, "ports": PORTS, "members": members}))
+            "host": self.ip, "ports": PORTS, "members": members, "public": public or {}}))
         if sh("docker", "inspect", self.c["pgproxy"], check=False).returncode == 0:
             sh("docker", "kill", "-s", "USR2", self.c["pgproxy"])
             return
@@ -149,7 +149,7 @@ class Node:
         lines = proc.stdout.splitlines()
         return (int(lines[0]) if lines else 0), "\n".join(lines[1:])
 
-    def sql(self, sql, port=None, user="postgres", password=None, db="postgres"):
+    def sql(self, sql, port=None, user="postgres", password=None, db="postgres", sslmode="prefer"):
         password = password or self.test.secrets["PG_SUPERUSER_PASSWORD"]
         # The password goes through a pgpass file of the client container
         pgpass = os.path.join(self.dir, f"pgpass-{user}")
@@ -158,7 +158,7 @@ class Node:
         os.chmod(pgpass, 0o600)
         return sh("docker", "run", "--rm", "-i", "--network", f"container:{self.c['net']}",
                   "--entrypoint", "psql", "-v", f"{pgpass}:/pgpass:ro", "-e", "PGPASSFILE=/pgpass",
-                  "-e", "PGCONNECT_TIMEOUT=5", self.test.image,
+                  "-e", "PGCONNECT_TIMEOUT=5", "-e", f"PGSSLMODE={sslmode}", self.test.image,
                   "-X", "-q", "-A", "-t", "-h", "127.0.0.1", "-p", str(port or PORTS["endpoint"]),
                   "-U", user, "-d", db, "-v", "ON_ERROR_STOP=1", input_text=sql, check=False)
 
@@ -240,6 +240,20 @@ class ClusterTest:
         assert n1.sql("SHOW password_encryption;").stdout.strip() == "scram-sha-256"
         assert n1.sql("SHOW wal_sender_shutdown_timeout;").stdout.strip() == "30s"
         n1.sql("CREATE TABLE t (id serial primary key, v text); INSERT INTO t (v) VALUES ('standalone');")
+
+        step("Public endpoint: TLS only, source allowlist")
+        n1.start_proxy([n1.member()], {"enabled": True, "allowlist": ["127.0.0.1/32"]})
+        time.sleep(3)
+        pub = PORTS["public"]
+        out = wait(lambda: n1.sql("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid();", port=pub,
+                                  sslmode="require").stdout.strip(), 30, 2, "TLS through the public endpoint")
+        assert out == "t", out
+        assert n1.sql("SELECT 1;", port=pub, sslmode="disable").returncode != 0, "plain text must be refused"
+        n1.start_proxy([n1.member()], {"enabled": True, "allowlist": ["192.0.2.1/32"]})
+        time.sleep(3)
+        assert n1.sql("SELECT 1;", port=pub, sslmode="require").returncode != 0, "source not allowlisted"
+        assert n1.sql("SELECT 1;").returncode == 0, "the internal endpoint is not affected"
+        n1.start_proxy([n1.member()])
 
         step("Grant a client database with a SCRAM verifier")
         pw = pgha.new_password()

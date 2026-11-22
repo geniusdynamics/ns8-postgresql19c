@@ -24,14 +24,14 @@ sys.path.insert(0, os.path.join(HERE, "..", "..", "imageroot", "pypkg"))
 
 import pgha  # noqa: E402
 
-PORTS = pgha.parse_ports("20001,20002,20003,20004,20005,20006,20007")
+PORTS = pgha.parse_ports("20001,20002,20003,20004,20005,20006,20007,20008")
 SECRETS = {k: f"secret-{k.lower()}" for k in pgha.SECRET_KEYS}
 
 
 class PortsTest(unittest.TestCase):
     def test_names(self):
         self.assertEqual(PORTS, {"pg": 20001, "patroni": 20002, "etcd_client": 20003, "etcd_peer": 20004,
-                                 "endpoint": 20005, "endpoint_ro": 20006, "pgadmin": 20007})
+                                 "endpoint": 20005, "endpoint_ro": 20006, "pgadmin": 20007, "public": 20008})
 
     def test_missing_ports_are_zero(self):
         p = pgha.parse_ports("", "20010")
@@ -396,3 +396,81 @@ class ClientIdTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublicAccessTest(unittest.TestCase):
+    def render(self, enabled=True, allowlist=None):
+        return pgha.render_haproxy({
+            "host": "10.5.4.1", "ports": pgha.parse_ports("1,2,3,4,5,6,7,20008"),
+            "members": [{"module_id": "pg1", "host": "10.5.4.1", "pg_port": 1, "patroni_port": 2}],
+            "public": {"enabled": enabled, "allowlist": allowlist or []}})
+
+    def test_off_by_default(self):
+        self.assertNotIn("listen public", self.render(enabled=False))
+        self.assertNotIn("listen public", pgha.render_haproxy({
+            "host": "10.5.4.1", "ports": PORTS, "members": []}))
+
+    def test_tls_only_any_source(self):
+        text = self.render()
+        public = text.split("listen public")[1]
+        self.assertIn("bind 0.0.0.0:20008", public)
+        self.assertNotIn("allowed_src", public)
+        self.assertIn("req.payload(0,8) -m bin 0000000804d2162f", public)
+        self.assertIn("tcp-request content reject", public)
+        self.assertIn("uri /primary", public)
+        # The internal listeners keep their loopback and VPN binds
+        self.assertIn("bind 127.0.0.1:5", text)
+
+    def test_allowlist(self):
+        public = self.render(allowlist=["203.0.113.0/24", "198.51.100.7/32"]).split("listen public")[1]
+        self.assertIn("acl allowed_src src 203.0.113.0/24 198.51.100.7/32", public)
+        self.assertIn("tcp-request connection reject if !allowed_src", public)
+
+    def test_allowlist_normalization(self):
+        self.assertEqual(pgha.public_allowlist("203.0.113.9, 10.0.0.0/8"), ["203.0.113.9/32", "10.0.0.0/8"])
+        self.assertEqual(pgha.public_allowlist(["192.0.2.5/24"]), ["192.0.2.0/24"])
+        self.assertEqual(pgha.public_allowlist(""), [])
+        with self.assertRaises(ValueError):
+            pgha.normalize_network("not-an-ip")
+
+    def test_firewall_rules(self):
+        self.assertEqual(pgha.firewall_rules(20008, ["203.0.113.0/24"]), [
+            'rule family="ipv4" source address="203.0.113.0/24" port port="20008" protocol="tcp" accept'])
+
+    def test_member_tls(self):
+        doc = json.loads(pgha.render_patroni({
+            "module_id": "a1", "scope": "a1", "host": "10.5.4.1", "ports": PORTS, "secrets": SECRETS,
+            "etcd_hosts": [], "max_connections": 100}))
+        params = doc["postgresql"]["parameters"]
+        self.assertEqual(params["ssl"], "on")
+        self.assertEqual(params["ssl_cert_file"], "/run/patroni/node.crt")
+
+
+class FirewallTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.env = mock.patch.dict(os.environ, {"AGENT_STATE_DIR": self.tmp.name, "MODULE_ID": "pg1",
+                                                "TCP_PORTS": "1,2,3,4,5,6,7,20008"})
+        self.env.start()
+        import agent
+        self.calls = []
+        for name in ("add_rich_rules", "remove_rich_rules", "add_public_service", "remove_public_service"):
+            setattr(agent, name, (lambda n: lambda *a, **k: self.calls.append((n, a)) or True)(name))
+
+    def tearDown(self):
+        self.env.stop()
+        self.tmp.cleanup()
+
+    def test_transitions(self):
+        self.assertTrue(pgha.apply_firewall(enabled=True, allowlist=[]))
+        self.assertEqual(self.calls, [("add_public_service", ("pg1-public", ["20008/tcp"]))])
+        self.calls.clear()
+        self.assertFalse(pgha.apply_firewall(enabled=True, allowlist=[]))
+        self.assertEqual(self.calls, [])
+        # Allowlist: rich rules instead of the open service
+        self.assertTrue(pgha.apply_firewall(enabled=True, allowlist=["203.0.113.0/24"]))
+        self.assertEqual([c[0] for c in self.calls], ["add_rich_rules", "remove_public_service"])
+        self.calls.clear()
+        self.assertTrue(pgha.apply_firewall(enabled=False))
+        self.assertEqual([c[0] for c in self.calls], ["remove_rich_rules"])
+        self.assertEqual(pgha.read_firewall_state(), {"service": False, "rules": []})

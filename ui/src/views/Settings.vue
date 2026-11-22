@@ -226,19 +226,24 @@
                         $t("common.enabled")
                       }}</template>
                     </NsToggle>
-                    <NsToggle
-                      value="http2https"
-                      :label="$t('settings.http2https')"
-                      v-model="http2https"
+                    <NsTextInput
+                      v-model.trim="pgadminPath"
+                      :label="$t('settings.pgadmin_path')"
+                      placeholder="/pgadmin"
+                      :helper-text="$t('settings.pgadmin_path_helper')"
+                      :invalid-message="error.pgadmin_path"
                       :disabled="isFormDisabled"
-                    >
-                      <template slot="text-left">{{
-                        $t("common.disabled")
-                      }}</template>
-                      <template slot="text-right">{{
-                        $t("common.enabled")
-                      }}</template>
-                    </NsToggle>
+                      ref="pgadmin_path"
+                    />
+                    <cv-text-area
+                      v-model="pgadminAllowlist"
+                      :label="$t('settings.pgadmin_ip_allowlist')"
+                      :helper-text="$t('settings.allowlist_helper')"
+                      :invalid-message="error.pgadmin_ip_allowlist"
+                      :disabled="isFormDisabled"
+                      class="mg-bottom"
+                      ref="pgadmin_ip_allowlist"
+                    />
                     <div v-if="savedPgadmin" class="mg-bottom">
                       <NsButton
                         kind="tertiary"
@@ -269,6 +274,67 @@
                 </template>
               </cv-accordion-item>
             </cv-accordion>
+            <!-- network access of this instance -->
+            <div class="maxwidth mg-bottom">
+              <h6 class="mg-bottom-sm">{{ $t("settings.network_access") }}</h6>
+              <p class="helper mg-bottom-sm">
+                {{ $t("settings.network_access_description") }}
+              </p>
+              <NsToggle
+                value="publicAccess"
+                :label="$t('settings.public_access_enabled')"
+                v-model="publicAccess"
+                :disabled="isFormDisabled"
+                class="mg-bottom"
+              >
+                <template #tooltip>{{
+                  $t("settings.public_access_tooltip")
+                }}</template>
+                <template slot="text-left">{{
+                  $t("common.disabled")
+                }}</template>
+                <template slot="text-right">{{
+                  $t("common.enabled")
+                }}</template>
+              </NsToggle>
+              <template v-if="publicAccess">
+                <cv-text-area
+                  v-model="publicAllowlist"
+                  :label="$t('settings.public_access_allowlist')"
+                  :helper-text="$t('settings.allowlist_helper')"
+                  :invalid-message="error.public_access_allowlist"
+                  :disabled="isFormDisabled"
+                  class="mg-bottom"
+                  ref="public_access_allowlist"
+                />
+                <NsInlineNotification
+                  v-if="!linesToList(publicAllowlist).length"
+                  kind="warning"
+                  :title="$t('settings.public_any_source')"
+                  :description="$t('settings.public_any_source_description')"
+                  :showCloseButton="false"
+                />
+                <p class="helper mg-bottom-sm">
+                  {{
+                    $t("settings.public_access_connect", {
+                      port: publicPort,
+                    })
+                  }}
+                </p>
+                <NsCodeSnippet
+                  v-if="caCertificate"
+                  :copyTooltip="core.$t('common.copy_to_clipboard')"
+                  :copy-feedback="core.$t('common.copied_to_clipboard')"
+                  :feedback-aria-label="core.$t('common.copied_to_clipboard')"
+                  :wrap-text="true"
+                  :moreText="core.$t('common.show_more')"
+                  :lessText="core.$t('common.show_less')"
+                  light
+                  class="mg-bottom"
+                  >{{ caCertificate }}</NsCodeSnippet
+                >
+              </template>
+            </div>
             <NsInlineNotification
               v-if="error.configureModule"
               kind="error"
@@ -335,7 +401,12 @@ export default {
       host: "",
       pgadminEmail: "",
       letsEncrypt: false,
-      http2https: true,
+      pgadminPath: "",
+      pgadminAllowlist: "",
+      publicAccess: false,
+      publicAllowlist: "",
+      publicPort: 0,
+      caCertificate: "",
       vault: {},
       loading: {
         getConfiguration: false,
@@ -352,6 +423,9 @@ export default {
         max_connections: "",
         host: "",
         pgadmin_email: "",
+        pgadmin_path: "",
+        pgadmin_ip_allowlist: "",
+        public_access_allowlist: "",
       },
     };
   },
@@ -449,7 +523,14 @@ export default {
         this.host = config.host || "";
         this.pgadminEmail = config.pgadmin_email || "";
         this.letsEncrypt = config.lets_encrypt;
-        this.http2https = config.http2https;
+        this.pgadminPath = config.pgadmin_path || "";
+        this.pgadminAllowlist = (config.pgadmin_ip_allowlist || []).join("\n");
+        this.publicAccess = config.public_access_enabled;
+        this.publicAllowlist = (config.public_access_allowlist || []).join(
+          "\n"
+        );
+        this.publicPort = config.public_port;
+        this.caCertificate = config.tls_ca_certificate || "";
       } catch (failure) {
         this.error.getConfiguration = this.taskErrorMessage(failure);
       }
@@ -470,7 +551,7 @@ export default {
         );
         ok = false;
       }
-      if (this.pgadminEnabled && !this.host) {
+      if (this.pgadminEnabled && !this.host && !this.pgadminPath) {
         this.error.host = this.$t("common.required");
         ok = false;
       }
@@ -487,6 +568,10 @@ export default {
       if (this.isJoining) {
         data.cluster_id = this.clusterId;
       }
+      data.public_access_enabled = this.publicAccess;
+      data.public_access_allowlist = this.publicAccess
+        ? this.linesToList(this.publicAllowlist)
+        : [];
       if (!this.isClusterSettingLocked) {
         data.replication_mode = this.replicationMode;
         data.max_connections = Number(this.maxConnections);
@@ -494,7 +579,8 @@ export default {
       if (this.pgadminEnabled) {
         data.host = this.host;
         data.lets_encrypt = this.letsEncrypt;
-        data.http2https = this.http2https;
+        data.pgadmin_path = this.pgadminPath;
+        data.pgadmin_ip_allowlist = this.linesToList(this.pgadminAllowlist);
         if (this.pgadminEmail) {
           data.pgadmin_email = this.pgadminEmail;
         }

@@ -57,14 +57,17 @@ buildah add "${container}" ui/dist /ui
 # - postgresql19c@any:pgpeer: the other instances of this module may run
 #   the guarded peer actions (admit-member, also gated by set-peer-access,
 #   and reconcile-cluster). Consumers request postgresql19c@any:pgclient.
-# - seven TCP ports: PostgreSQL, Patroni REST, etcd client, etcd peer,
-#   client endpoint (read-write), client endpoint (read-only), pgAdmin.
-#   Every port listens on loopback and/or the node cluster VPN address,
-#   which is in the trusted firewall zone: no node:fwadm, nothing public.
+# - node:fwadm: the optional direct access from outside the cluster opens
+#   the public endpoint port in the node firewall (to everyone, or to an
+#   allowlist with rich rules). Nothing is opened by default.
+# - eight TCP ports: PostgreSQL, Patroni REST, etcd client, etcd peer,
+#   client endpoint (read-write), client endpoint (read-only), pgAdmin,
+#   public endpoint (TLS only). The others listen on loopback and/or the
+#   node cluster VPN address, which is in the trusted firewall zone.
 # - rootless module; core 3.20.1+ as the module template
 buildah config --entrypoint=/ \
-    --label="org.nethserver.authorizations=traefik@node:routeadm postgresql19c@any:pgpeer" \
-    --label="org.nethserver.tcp-ports-demand=7" \
+    --label="org.nethserver.authorizations=traefik@node:routeadm node:fwadm postgresql19c@any:pgpeer" \
+    --label="org.nethserver.tcp-ports-demand=8" \
     --label="org.nethserver.rootfull=0" \
     --label="org.nethserver.min-core=3.20.1" \
     --label="org.nethserver.volumes=pgdata" \

@@ -48,18 +48,24 @@ Use Endpoint
 
 Probe
     [Documentation]    Run SQL as the consumer, from the module user of an instance
-    [Arguments]    ${module_id}    ${sql}    ${port_key}=port    ${file}=/root/pg-grant.json
-    ${output}  ${rc} =    Execute Command    runagent -m ${module_id} python3 /tmp/pg-probe.py "${sql}" ${port_key} < ${file}
+    [Arguments]    ${module_id}    ${sql}    ${port_key}=port    ${sslmode}=prefer    ${file}=/root/pg-grant.json
+    ${output}  ${rc} =    Execute Command    runagent -m ${module_id} python3 /tmp/pg-probe.py "${sql}" ${port_key} ${sslmode} < ${file}
     ...    return_rc=True
     Should Be Equal As Integers    ${rc}  0    ${output}
     ${result} =    Evaluate    json.loads($output)    modules=json
     RETURN    ${result}
 
 Probe Should Succeed
-    [Arguments]    ${module_id}    ${sql}    ${port_key}=port
-    ${result} =    Probe    ${module_id}    ${sql}    ${port_key}
+    [Arguments]    ${module_id}    ${sql}    ${port_key}=port    ${sslmode}=prefer
+    ${result} =    Probe    ${module_id}    ${sql}    ${port_key}    ${sslmode}
     Should Be True    ${result}[ok]    ${result}
     RETURN    ${result}[output]
+
+Probe Should Fail
+    [Arguments]    ${module_id}    ${sql}    ${port_key}=port    ${sslmode}=prefer
+    ${result} =    Probe    ${module_id}    ${sql}    ${port_key}    ${sslmode}
+    Should Not Be True    ${result}[ok]    ${result}
+    RETURN    ${result}
 
 Status Should Be Healthy
     [Arguments]    ${module_id}    ${members}    ${voters}

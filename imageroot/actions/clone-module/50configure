@@ -32,8 +32,9 @@ ret = agent.tasks.run(agent_id=os.environ["AGENT_ID"], action="configure-module"
     "role": "standalone",
     "replication_mode": pgha.replication_mode(),
     "max_connections": pgha.max_connections(),
-    "pgadmin_enabled": pgha.env("PGADMIN_ENABLED") == "1" and bool(pgha.env("TRAEFIK_HOST")),
+    "pgadmin_enabled": pgha.env("PGADMIN_ENABLED") == "1" and bool(pgha.env("TRAEFIK_HOST") or pgha.env("PGADMIN_PATH")),
     "host": pgha.env("TRAEFIK_HOST"),
+    "pgadmin_path": pgha.env("PGADMIN_PATH"),
     "http2https": pgha.env("TRAEFIK_HTTP2HTTPS", "True").lower() == "true",
     "lets_encrypt": False,
 })

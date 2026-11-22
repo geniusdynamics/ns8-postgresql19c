@@ -116,6 +116,61 @@ A restart keeps the data
     ${out} =    Wait Until Keyword Succeeds    60s    5s    Probe Should Succeed    ${mid}    SELECT v FROM t;
     Should Be Equal    ${out}    hello
 
+pgAdmin gets a route and loses it when turned off
+    Run Action    ${mid}    configure-module    {"role": "standalone", "pgadmin_enabled": true, "host": "pgadmin.robot.example.org", "lets_encrypt": false, "pgadmin_ip_allowlist": ["127.0.0.1"]}
+    ${route} =    Run Action    traefik1    get-route    {"instance": "${mid}"}
+    Should Be Equal    ${route}[host]    pgadmin.robot.example.org
+    Should Be True    ${route}[http2https]
+    ${rc} =    Execute Command    runagent -m ${mid} systemctl --user is-active pgadmin.service
+    ...    return_rc=True  return_stdout=False
+    Should Be Equal As Integers    ${rc}  0
+    ${config} =    Execute Command    api-cli run module/${mid}/get-configuration
+    Should Contain    ${config}    "pgadmin_password_set": true
+    Run Action    ${mid}    configure-module    {"role": "standalone", "pgadmin_enabled": false}
+    ${route} =    Run Action    traefik1    get-route    {"instance": "${mid}"}
+    Should Be Empty    ${route}
+    ${rc} =    Execute Command    runagent -m ${mid} systemctl --user is-active pgadmin.service
+    ...    return_rc=True  return_stdout=False
+    Should Not Be Equal As Integers    ${rc}  0
+
+Public access opens the port and requires TLS
+    Run Action    ${mid}    configure-module    {"role": "standalone", "public_access_enabled": true}
+    ${config} =    Run Action    ${mid}    get-configuration
+    Should Be True    ${config}[public_access_enabled]
+    Should Contain    ${config}[tls_ca_certificate]    BEGIN CERTIFICATE
+    ${services} =    Execute Command    firewall-cmd --list-services
+    Should Contain    ${services}    ${mid}-public
+    Use Endpoint    127.0.0.1    ${config}[public_port]
+    ${out} =    Wait Until Keyword Succeeds    30s    3s    Probe Should Succeed    ${mid}    SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid();    port    require
+    Should Be Equal    ${out}    t
+    ${result} =    Probe    ${mid}    SELECT 1;    port    disable
+    Should Not Be True    ${result}[ok]    plain text must be refused on the public endpoint
+    Set Suite Variable    ${public_port}    ${config}[public_port]
+
+An allowlist replaces the open port with source rules
+    Run Action    ${mid}    configure-module    {"role": "standalone", "public_access_enabled": true, "public_access_allowlist": ["127.0.0.1", "192.0.2.0/24"]}
+    ${services} =    Execute Command    firewall-cmd --list-services
+    Should Not Contain    ${services}    ${mid}-public
+    ${rules} =    Execute Command    firewall-cmd --list-rich-rules
+    Should Contain    ${rules}    192.0.2.0/24
+    Should Contain    ${rules}    port="${public_port}"
+    # The proxy enforces the allowlist too: the node itself (127.0.0.1) is allowed
+    Probe Should Succeed    ${mid}    SELECT 1;    port    require
+    # A source outside the allowlist cannot be faked from the test node; the
+    # proxy rule is checked by removing 127.0.0.1 from the list instead
+    Run Action    ${mid}    configure-module    {"role": "standalone", "public_access_enabled": true, "public_access_allowlist": ["192.0.2.0/24"]}
+    ${result} =    Wait Until Keyword Succeeds    30s    3s    Probe Should Fail    ${mid}    SELECT 1;    port    require
+    ${output} =    Action Should Fail    ${mid}    configure-module    {"role": "standalone", "public_access_allowlist": ["not-an-ip"]}
+
+Turning public access off closes the port
+    Run Action    ${mid}    configure-module    {"role": "standalone", "public_access_enabled": false}
+    ${rules} =    Execute Command    firewall-cmd --list-rich-rules
+    Should Not Contain    ${rules}    port="${public_port}"
+    ${services} =    Execute Command    firewall-cmd --list-services
+    Should Not Contain    ${services}    ${mid}-public
+    ${listen} =    Execute Command    ss -Htln "sport = :${public_port}"
+    Should Be Empty    ${listen}
+
 Remove the module
     ${rc} =    Execute Command    remove-module --no-preserve ${mid}
     ...    return_rc=True  return_stdout=False

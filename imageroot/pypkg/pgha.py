@@ -76,7 +76,7 @@ MODULE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*[0-9]+$")
 CLIENT_ID_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,62}$")
 DB_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 RESERVED_NAMES = set(SYSTEM_ROLES) | {"template0", "template1", "public", "patroni", "pgadmin"}
-PORT_NAMES = ("pg", "patroni", "etcd_client", "etcd_peer", "endpoint", "endpoint_ro", "pgadmin")
+PORT_NAMES = ("pg", "patroni", "etcd_client", "etcd_peer", "endpoint", "endpoint_ro", "pgadmin", "public")
 SECRET_KEYS = ("PG_SUPERUSER_PASSWORD", "PG_REPLICATION_PASSWORD", "PG_REWIND_PASSWORD",
                "PATRONI_REST_PASSWORD")
 # Cluster secrets: shared by every member; the pgAdmin password is per instance
@@ -280,6 +280,31 @@ def vpn_ip(node_id=None, rdb=None):
 def local_host():
     """Address the instance listens on and announces to its peers"""
     return env("PG_HOST_OVERRIDE") or vpn_ip() or "127.0.0.1"
+
+
+def public_access_enabled():
+    return env("PG_PUBLIC_ACCESS") == "1"
+
+
+def public_allowlist(value=None):
+    """Normalized source networks allowed on the public endpoint"""
+    text = env("PG_PUBLIC_ALLOWLIST") if value is None else value
+    items = text if isinstance(text, list) else (text or "").split(",")
+    return [normalize_network(i) for i in items if i and i.strip()]
+
+
+def normalize_network(text):
+    """'10.1.2.3' -> '10.1.2.3/32'; raises ValueError when invalid"""
+    return str(ipaddress.ip_network(text.strip(), strict=False))
+
+
+def firewall_rules(port, allowlist):
+    """firewalld rich rules that open `port` to the allowlist sources"""
+    rules = []
+    for net in allowlist:
+        family = "ipv6" if ipaddress.ip_network(net).version == 6 else "ipv4"
+        rules.append(f'rule family="{family}" source address="{net}" port port="{port}" protocol="tcp" accept')
+    return rules
 
 
 def server_image():
@@ -538,6 +563,13 @@ def render_patroni(cfg):
             "parameters": {
                 "unix_socket_directories": "/var/run/postgresql",
                 "password_encryption": "scram-sha-256",
+                # TLS with the member certificate (cluster CA): required on
+                # the public endpoint, available to every client
+                "ssl": "on",
+                "ssl_cert_file": "/run/patroni/node.crt",
+                "ssl_key_file": "/run/patroni/node.key",
+                "ssl_ca_file": "/run/patroni/ca.crt",
+                "ssl_min_protocol_version": "TLSv1.2",
             },
             "pg_hba": pg_hba(),
             "create_replica_methods": ["basebackup"],
@@ -633,6 +665,29 @@ def render_haproxy(cfg):
     # Read-only endpoint: any running member (replicas and the primary) whose
     # replication lag is under 16 MB
     lines += section("readonly", p["endpoint_ro"], "/read-only?lag=16MB", "leastconn")
+    public = cfg.get("public") or {}
+    if public.get("enabled") and p.get("public"):
+        # Direct access from outside the cluster: every address of the node.
+        # PostgreSQL sees the proxy as client address, so the source
+        # allowlist and the TLS requirement are enforced here, where the
+        # real source is known (and by the firewall for the allowlist).
+        out = section("public", p["public"], "/primary", "first")
+        out[1:1 + len(binds)] = [f"    bind 0.0.0.0:{p['public']}"]
+        rules = ["    tcp-request inspect-delay 5s"]
+        allow = public.get("allowlist") or []
+        if allow:
+            rules.append("    acl allowed_src src " + " ".join(allow))
+            rules.append("    tcp-request connection reject if !allowed_src")
+        rules += [
+            # TLS only: the PostgreSQL SSLRequest packet, or a direct TLS
+            # ClientHello (sslnegotiation=direct)
+            "    acl pg_sslrequest req.payload(0,8) -m bin 0000000804d2162f",
+            "    acl tls_hello req.ssl_hello_type 1",
+            "    tcp-request content accept if pg_sslrequest or tls_hello",
+            "    tcp-request content reject",
+        ]
+        idx = out.index("    option httpchk")
+        lines += out[:idx] + rules + out[idx:]
     return "\n".join(lines)
 
 
@@ -1408,14 +1463,18 @@ def render_component(component, member_list=None):
             "members": [{"module_id": m["module_id"], "host": m["host"], "pg_port": m["pg_port"],
                          "patroni_port": m["patroni_port"]}
                         for m in member_list if runs_postgres(m["role"]) and m["pg_port"]],
+            "public": {"enabled": public_access_enabled(), "allowlist": public_allowlist()},
         })
         changed |= write_if_changed(state_path("pgproxy", "haproxy.cfg"), text, 0o644)
     elif component == "pgadmin":
         changed |= write_if_changed(state_path("pgadmin", "servers.json"),
                                     render_pgadmin_servers({"module_id": env("MODULE_ID"), "ports": p}), 0o644)
         values = ensure_secrets()
-        changed |= write_if_changed(state_path("pgadmin", "pgadmin.env"),
-                                    f"PGADMIN_DEFAULT_PASSWORD={values['PGADMIN_PASSWORD']}\n")
+        text = f"PGADMIN_DEFAULT_PASSWORD={values['PGADMIN_PASSWORD']}\n"
+        if env("PGADMIN_PATH"):
+            # Served under a path prefix of the Traefik route
+            text += f"SCRIPT_NAME={env('PGADMIN_PATH')}\n"
+        changed |= write_if_changed(state_path("pgadmin", "pgadmin.env"), text)
     return changed
 
 
@@ -1769,3 +1828,48 @@ def run_reconcile(removed="", timer=False):
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
+
+
+FIREWALL_STATE = "firewall.json"
+
+
+def read_firewall_state():
+    try:
+        with open(state_path(FIREWALL_STATE)) as fp:
+            return json.load(fp)
+    except (FileNotFoundError, ValueError):
+        return {"service": False, "rules": []}
+
+
+def apply_firewall(enabled=None, allowlist=None, port=None):
+    """Open or close the public endpoint in the node firewall. Returns True
+    when something changed."""
+    agent = _agent()
+    enabled = public_access_enabled() if enabled is None else enabled
+    allowlist = public_allowlist() if allowlist is None else allowlist
+    port = port or ports()["public"]
+    service = f"{env('MODULE_ID')}-public"
+    current = read_firewall_state()
+    want_service = bool(enabled and port and not allowlist)
+    want_rules = firewall_rules(port, allowlist) if enabled and port else []
+    changed = False
+    old_rules = [r for r in current.get("rules", []) if r not in want_rules]
+    if old_rules:
+        if not agent.remove_rich_rules(old_rules):
+            raise RuntimeError("remove-rich-rules failed")
+        changed = True
+    new_rules = [r for r in want_rules if r not in current.get("rules", [])]
+    if new_rules:
+        if not agent.add_rich_rules(new_rules):
+            raise RuntimeError("add-rich-rules failed")
+        changed = True
+    if want_service and not current.get("service"):
+        if not agent.add_public_service(service, [f"{port}/tcp"], replace_ports=True):
+            raise RuntimeError("add-public-service failed")
+        changed = True
+    elif not want_service and current.get("service"):
+        if not agent.remove_public_service(service):
+            raise RuntimeError("remove-public-service failed")
+        changed = True
+    write_private(state_path(FIREWALL_STATE), json.dumps({"service": want_service, "rules": want_rules}))
+    return changed

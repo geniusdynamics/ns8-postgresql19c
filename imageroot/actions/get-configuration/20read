@@ -24,6 +24,11 @@ vault = ps.vault_settings()
 secrets_values = pgha.read_secrets()
 p = pgha.ports()
 try:
+    with open(pgha.tls_path("ca.crt")) as fp:
+        ca_cert = fp.read()
+except FileNotFoundError:
+    ca_cert = ""
+try:
     peers = access.peer_candidates(rdb)
 except Exception as ex:
     print(agent.SD_WARNING + f"Cannot list the other instances: {ex}", file=sys.stderr)
@@ -56,6 +61,14 @@ json.dump({
     "pgadmin_password_set": bool(secrets_values.get("PGADMIN_PASSWORD")),
     "superuser_password_set": bool(secrets_values.get("PG_SUPERUSER_PASSWORD")),
     "replication_password_set": bool(secrets_values.get("PG_REPLICATION_PASSWORD")),
+    "pgadmin_path": pgha.env("PGADMIN_PATH"),
+    "pgadmin_ip_allowlist": [i for i in pgha.env("PGADMIN_IP_ALLOWLIST").split(",") if i],
+    "public_access_enabled": pgha.public_access_enabled(),
+    "public_access_allowlist": pgha.public_allowlist(),
+    "public_port": p["public"],
+    # Public certificate of the cluster CA (not a secret): clients use it
+    # with sslmode=verify-ca on the public endpoint
+    "tls_ca_certificate": ca_cert,
     "vault_enabled": vault["vault_enabled"],
     "vault_address": vault["vault_address"],
     "vault_token_set": vault["vault_token_set"],

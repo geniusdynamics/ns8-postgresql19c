@@ -90,9 +90,11 @@ The member list comes from the NethServer service records and is reloaded
   (`node/<id>/vpn` `ip_address`), not from an environment variable.
 - PostgreSQL, the endpoint and the etcd client port listen on `127.0.0.1`
   and the VPN address; Patroni's REST API and the etcd peer port on the VPN
-  address. Nothing listens on public addresses and no firewall port is
-  opened: the VPN network is in the `trusted` zone of every node.
-- Seven TCP ports per instance (`org.nethserver.tcp-ports-demand=7`), all
+  address. By default nothing listens on public addresses and no firewall
+  port is opened: the VPN network is in the `trusted` zone of every node.
+  Direct access from outside is opt-in per instance (`node:fwadm`), see
+  [network access](network-access.md).
+- Eight TCP ports per instance (`org.nethserver.tcp-ports-demand=8`), all
   allocated when the module is added:
 
 | Index | Variable | Use | Listens on |
@@ -104,6 +106,7 @@ The member list comes from the NethServer service records and is reloaded
 | 5 | `ENDPOINT_PORT` | client endpoint, read-write | loopback, VPN |
 | 6 | `ENDPOINT_RO_PORT` | client endpoint, read-only | loopback, VPN |
 | 7 | `PGADMIN_PORT` | pgAdmin (Traefik) | loopback |
+| 8 | `PUBLIC_PORT` | public endpoint, TLS only, when direct access is on ([network access](network-access.md)) | all IPv4 addresses; firewall opened per settings |
 
 ### Security
 

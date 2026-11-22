@@ -138,5 +138,13 @@ if data.get("pgadmin_enabled") is not None:
     envmap["PGADMIN_ENABLED"] = "1" if data["pgadmin_enabled"] else "0"
 if data.get("pgadmin_email"):
     envmap["PGADMIN_EMAIL"] = data["pgadmin_email"]
+if "pgadmin_path" in data:
+    envmap["PGADMIN_PATH"] = data["pgadmin_path"]
+if "pgadmin_ip_allowlist" in data:
+    envmap["PGADMIN_IP_ALLOWLIST"] = ",".join(pgha.normalize_network(i) for i in data["pgadmin_ip_allowlist"])
+if "public_access_enabled" in data:
+    envmap["PG_PUBLIC_ACCESS"] = "1" if data["public_access_enabled"] else "0"
+if "public_access_allowlist" in data:
+    envmap["PG_PUBLIC_ALLOWLIST"] = ",".join(pgha.public_allowlist(data["public_access_allowlist"]))
 
 agent.mset_env(envmap)

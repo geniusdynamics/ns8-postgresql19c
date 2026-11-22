@@ -3,3 +3,4 @@
 - locks/
 - psql/
 - .configure-warnings.json
+- firewall.json

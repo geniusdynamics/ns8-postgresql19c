@@ -78,5 +78,11 @@ export default {
       }
       return this.$t("error.generic_error");
     },
+    linesToList(text) {
+      return (text || "")
+        .split(/[\n,]/)
+        .map((s) => s.trim())
+        .filter((s) => s);
+    },
   },
 };

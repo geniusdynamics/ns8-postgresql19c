@@ -21,7 +21,8 @@ import agent
 request = json.load(sys.stdin)
 original = request["environment"]
 keep = ("PG_REPLICATION_MODE", "PG_MAX_CONNECTIONS", "PGADMIN_ENABLED", "PGADMIN_EMAIL",
-        "TRAEFIK_HOST", "TRAEFIK_HTTP2HTTPS", "PG_VAULT_MOUNT", "PG_VAULT_PATH")
+        "TRAEFIK_HOST", "TRAEFIK_HTTP2HTTPS", "PG_VAULT_MOUNT", "PG_VAULT_PATH",
+        "PGADMIN_PATH", "PGADMIN_IP_ALLOWLIST", "PG_PUBLIC_ALLOWLIST")
 agent.mset_env({k: original[k] for k in keep if k in original})
 agent.mset_env({"PG_ROLE": "", "PG_CLUSTER_ID": "", "PG_ETCD_INITIAL_CLUSTER": "",
                 "PG_ETCD_INITIAL_STATE": "new", "PG_ALLOW_SAME_NODE": "0", "PG_VAULT_ENABLED": "0",
