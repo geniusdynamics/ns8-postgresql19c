@@ -9,6 +9,8 @@
 # listens on loopback and on the node cluster VPN address, the Patroni
 # REST API on the VPN address. patroni.yml holds the cluster passwords:
 # it is rendered 0600 by pgha-prepare at every start and never backed up.
+# PGPORT makes "podman exec patroni psql" use the local socket of the
+# allocated port.
 #
 [Unit]
 Description=Patroni and PostgreSQL 19
@@ -33,6 +35,7 @@ ExecStart=/usr/bin/podman run \
     --replace --name=%N \
     --network=host \
     --shm-size=256m \
+    --env=PGPORT=${PG_PORT} \
     --entrypoint=/usr/local/bin/ns8-patroni-start \
     --volume=pgdata:/var/lib/postgresql:Z \
     --volume=%S/state/patroni:/etc/patroni:Z \

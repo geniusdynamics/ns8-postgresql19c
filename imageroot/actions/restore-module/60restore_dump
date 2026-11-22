@@ -32,7 +32,7 @@ if first.startswith(pgha.REPLICA_DUMP_MARKER):
 
 agent.assert_exp(pgha.wait_primary_endpoint(timeout=300), "PostgreSQL is not ready")
 with open(DUMP) as fp:
-    proc = subprocess.run(["podman", "exec", "-i", "-u", "postgres", pgha.CONTAINERS["patroni"], "psql", "-X", "-q",
+    proc = subprocess.run(["podman", "exec", "-i", "-u", "postgres", pgha.CONTAINERS["patroni"], "psql", "-p", str(pgha.ports()["pg"]), "-X", "-q",
                            "-v", "ON_ERROR_STOP=1", "-d", "postgres"], stdin=fp, capture_output=True, text=True)
 if proc.returncode != 0:
     print(agent.SD_ERR + "Restore of the dump failed: " + proc.stderr.strip()[-800:], file=sys.stderr)

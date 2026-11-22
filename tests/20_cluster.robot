@@ -162,7 +162,9 @@ Removing a member removes its etcd vote
     ...    return_rc=True  return_stdout=False
     Should Be Equal As Integers    ${rc}  0
     ${status} =    Wait Until Keyword Succeeds    180s    5s    Status Should Be Healthy    ${m1}    2    2
-    ${out} =    Wait Until Keyword Succeeds    60s    5s    Probe Should Succeed    ${m1}    SELECT count(*) > 0 FROM t;    port
+    ${config} =    Run Action    ${m1}    get-configuration
+    Use Endpoint    ${config}[endpoint][host]    ${config}[endpoint][port]
+    ${out} =    Wait Until Keyword Succeeds    60s    5s    Probe Should Succeed    ${m1}    SELECT count(*) > 0 FROM t;
 
 Remove the instances
     FOR    ${mid}    IN    ${m1}    ${m2}    ${m3}

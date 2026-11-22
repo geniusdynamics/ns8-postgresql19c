@@ -33,7 +33,7 @@ if not primary:
 
 print("Dumping all PostgreSQL databases from the primary", file=sys.stderr)
 proc = subprocess.Popen(["podman", "exec", "-u", "postgres", pgha.CONTAINERS["patroni"], "pg_dumpall",
-                         "--quote-all-identifiers"],
+                         "-p", str(pgha.ports()["pg"]), "--quote-all-identifiers"],
                         stdout=subprocess.PIPE, text=True)
 with open(tmp, "w") as fp:
     for line in pgha.filter_dump(proc.stdout):
