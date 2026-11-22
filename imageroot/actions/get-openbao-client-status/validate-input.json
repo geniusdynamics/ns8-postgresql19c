@@ -1,0 +1,8 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "get-openbao-client-status input",
+    "type": "object",
+    "properties": {
+        "openbao_module_id": {"type": "string", "pattern": "^([a-z][a-z0-9-]{0,62}[0-9])?$"}
+    }
+}

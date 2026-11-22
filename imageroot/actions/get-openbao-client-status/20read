@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+
+#
+# Copyright (C) 2026 Genius Dynamics
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Provisioned mode state, without tokens (readers can run get-* actions).
+# With an OpenBao provider, the request status recorded by ns8-openbao.
+
+import json
+import sys
+
+import openbao_client
+import pgha_secrets as ps
+
+data = json.load(sys.stdin)
+settings = ps.vault_settings()
+provider = data.get("openbao_module_id") or settings["vault_provider"] or ""
+remote = {}
+if provider:
+    try:
+        remote = openbao_client.get_status(provider)
+    except openbao_client.ClientError as ex:
+        remote = {"error": ex.code}
+json.dump({"vault_auth": settings["vault_auth"], "vault_provider": settings["vault_provider"],
+           "group": ps.cluster_group(), "client": openbao_client.public_state(),
+           "status": remote.get("status", "none"), "error": remote.get("error", "")}, fp=sys.stdout)

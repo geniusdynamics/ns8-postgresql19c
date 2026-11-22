@@ -76,7 +76,10 @@ for field in ("public_access_allowlist", "pgadmin_ip_allowlist"):
 
 if data.get("vault_enabled"):
     settings = pgha_secrets.vault_settings()
-    if not (data.get("vault_address") or settings["vault_address"]):
+    if (data.get("vault_auth") or settings["vault_auth"]) == "provisioned":
+        if not (data.get("vault_provider") or settings["vault_provider"]):
+            pgha.validation_error("vault_provider", "", "required")
+    elif not (data.get("vault_address") or settings["vault_address"]):
         pgha.validation_error("vault_address", "", "required")
-    if not (data.get("vault_token") or settings["vault_token_set"]):
+    elif not (data.get("vault_token") or settings["vault_token_set"]):
         pgha.validation_error("vault_token", "", "required")
